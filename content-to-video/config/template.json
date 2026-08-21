@@ -1,0 +1,220 @@
+{
+  "name": "default",
+  "description": "Standard layout - badge + title + body/image + subtitle bar",
+  "version": "1.1.0",
+  "layout": {
+    "landscape": {
+      "badge": {
+        "top": 60,
+        "left": 80,
+        "size": 110,
+        "fontSize": 54
+      },
+      "title": {
+        "leftWithBadge": 205,
+        "leftWithoutBadge": 0,
+        "topNews": 80,
+        "topOther": "16%",
+        "topImageCenter": "46%",
+        "fontSizeNews": 84,
+        "fontSizeNewsImage": 72,
+        "fontSizeOther": 106,
+        "padding": "0 100px"
+      },
+      "body": {
+        "fontSize": 44,
+        "marginTop": 24,
+        "padding": "24px 30px",
+        "lineHeight": 1.55,
+        "maxWidth": 870
+      },
+      "tagline": {
+        "fontSize": 44,
+        "marginTop": 16,
+        "indent": 24
+      },
+      "image": {
+        "width": 900,
+        "height": 700,
+        "top": "48%",
+        "right": 50,
+        "glow": 40
+      },
+      "subtitle": {
+        "height": 176,
+        "fontSize": 46,
+        "padding": "0 50px",
+        "maxWidth": 1600
+      },
+      "agenda": {
+        "fontSize": 46,
+        "numSize": 60,
+        "gap": 20,
+        "marginTop": 56,
+        "indentLeft": 140,
+        "minFont": 32,
+        "shrinkThreshold": 6,
+        "shrinkMax": 8
+      },
+      "chip": {
+        "fontSize": 38,
+        "padding": "14px 28px",
+        "marginTop": 96
+      },
+      "progressBar": {
+        "height": 4
+      },
+      "accentBar": {
+        "width": 6
+      },
+      "grid": {
+        "size": 60
+      }
+    },
+    "vertical": {
+      "badge": {
+        "top": 60,
+        "left": 80,
+        "size": 90,
+        "fontSize": 42
+      },
+      "title": {
+        "leftWithBadge": 200,
+        "leftWithoutBadge": 0,
+        "topNews": 80,
+        "topOther": "14%",
+        "fontSizeNews": 76,
+        "fontSizeNewsImage": 72,
+        "fontSizeOther": 88,
+        "padding": "60px 80px"
+      },
+      "body": {
+        "fontSize": 38,
+        "marginTop": 24,
+        "padding": "24px 28px",
+        "lineHeight": 1.55,
+        "maxWidth": 760
+      },
+      "tagline": {
+        "fontSize": 36,
+        "marginTop": 14
+      },
+      "image": {
+        "width": 980,
+        "height": 980,
+        "top": "auto",
+        "centerHorizontal": true
+      },
+      "subtitle": {
+        "height": 216,
+        "fontSize": 40,
+        "padding": "0 60px",
+        "maxWidth": 900
+      },
+      "agenda": {
+        "fontSize": 40,
+        "numSize": 52,
+        "gap": 30,
+        "marginTop": 95,
+        "indentLeft": 52,
+        "minFont": 32,
+        "shrinkThreshold": 8,
+        "shrinkMax": 8,
+        "lineHeight": 1.34
+      },
+      "chip": {
+        "fontSize": 34,
+        "padding": "12px 24px",
+        "marginTop": 84
+      },
+      "progressBar": {
+        "height": 4
+      },
+      "accentBar": {
+        "width": 6
+      },
+      "grid": {
+        "size": 60
+      }
+    }
+  },
+  "animation": {
+    "titleEntrance": {
+      "type": "scale",
+      "from": 0.5,
+      "duration": 0.5,
+      "ease": "back.out(1.7)"
+    },
+    "badgeEntrance": {
+      "type": "scale",
+      "from": 0,
+      "duration": 0.4,
+      "ease": "back.out(2)"
+    },
+    "taglineEntrance": {
+      "y": 20,
+      "duration": 0.5,
+      "delay": 0.3
+    },
+    "bodyLineStagger": {
+      "delay": 0.15,
+      "x": -20,
+      "duration": 0.4,
+      "startDelay": 0.6
+    },
+    "accentBar": {
+      "duration": 0.5,
+      "ease": "power2.out"
+    },
+    "glowPulse": {
+      "duration": 0.8
+    },
+    "transitionWipe": {
+      "duration": 0.4,
+      "ease": "power2.inOut"
+    },
+    "segmentFadeIn": {
+      "duration": 0.3,
+      "ease": "power2.out"
+    },
+    "segmentFadeOut": {
+      "duration": 0.3,
+      "ease": "power2.in"
+    },
+    "firstSegmentFadeIn": {
+      "duration": 0.4
+    },
+    "imageEntrance": {
+      "x": 60,
+      "duration": 0.8,
+      "ease": "power2.out",
+      "startDelay": 0.2
+    },
+    "agendaStagger": {
+      "delay": 0.12,
+      "x": -30,
+      "duration": 0.4,
+      "ease": "power2.out",
+      "startDelay": 0.6
+    },
+    "chipStagger": {
+      "delay": 0.1,
+      "scaleFrom": 0.8,
+      "duration": 0.35,
+      "ease": "back.out(1.8)",
+      "startDelay": 0.6
+    }
+  },
+  "typography": {
+    "fontFamily": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans SC\", sans-serif",
+    "titleWeight": 900,
+    "taglineWeight": 600,
+    "bodyWeight": 400,
+    "titleLineHeight": 1.25,
+    "badgeWeight": 900,
+    "bodyLineGap": 12,
+    "bodyBorderRadius": 16,
+    "bodyBorderLeft": 4,
+    "imageBorderRadius": 24
+  }
+}

@@ -1,0 +1,255 @@
+{
+  "current_version": "1.5.29",
+  "entries": [
+    {
+      "version": "1.5.29",
+      "date": "2026-08-22",
+      "summary": "清理全部 demo 目录后对 skill 做深度 review，修复三处确凿缺陷：① _titles.py 标题尾部标点清理的字符集源码误写——rstrip(\"，。！？、；：\\\"\\\"''（）【】\") 里 \\\"\\\" 实为空字符串拼接、'' 是两个 ASCII 单引号，弯引号 “”‘’ 与 ASCII 双引号整个类别静默漏清（API 对尾部标点敏感），改为显式含弯引号+ASCII 引号的正确集合（两处调用点）；② _contracts.py 对非列表形态的 truthy dialogue（字符串/对象）放行——text+坏 dialogue 组合绕过 has_dialogue 判定后，build_from_structured._collect_dialogue_sentences 对字符串迭代取 turn.get() 直接 AttributeError 裸栈（pipeline 只接 ValueError），补 dialogue 必须为数组的类型检查，报错同时覆盖'dialogue 类型写错被误报为缺字段'的误导路径；③ template.json vertical.image 死值与文档矛盾（800×800 top:400，实际竖屏图片槽为 CSS 全量覆盖的 980×980 flex 流内元素），更新为 980×980/top auto（centerHorizontal 是 gen_hyperframes 标题/缩进分支仍在消费的活标志，保留）。文档同步三处过时表述：image_options.md 竖屏图片槽'随 --sub-mode 变化（verse 1:1/bar 4:3）'改为按画幅取形（竖屏家族只有 verse，4:3 槽归 portrait）；internals.md 误称 gen_charts.py 也写 images.json（实际只有 search_images.py，gen_charts 只出图片文件需手动填映射）；pitfalls.md #8 concat_audio 归属 pipeline.py 更正为 _audio.py（pipeline 调用）。验证：坏 dialogue 拦截与弯引号清理实测通过 + dev/check 14/14。"
+    },
+    {
+      "version": "1.5.28",
+      "date": "2026-08-22",
+      "summary": "竖屏家族锁定 verse-only + 横屏 verse 重做为 bar 布局框架（用户指定'竖屏只有 verse 不要 bar 本来也放不下；横屏可以 bar 和 verse 但布局不用变，还是按 bar 的布局，把内容框变成滚动框'）。① 竖屏家族（vertical/portrait）只有 verse：generate_html 对 aspect=vertical+sub_mode=bar 抛 ValueError（fail-fast 而非静默降级——静默换模式会让调用方以为拿到了 bar 产物），run.py CLI 层同规则拦截。② 横屏 verse = bar 布局框架 + 内容框换滚动框：badge/标题/tagline/图片/进度条与 bar 完全同位，内容段 verse 进 title-wrap 文档流占据正文卡位置（有图段随标题浮动、无图段 870 居中），开场/收尾保留目录/回顾、verse 钉左列底部（left:50、宽 870、高 300）且标题组居中于窗口上方（top:calc((100%-380px)/2)）。③ 修复横屏 verse 有图段窗口宽度：title-wrap 在有图段是全宽 1760（标题横跨正文与图片上方），verse 的 width:100% 会继承全宽、长句右半截滑到图片底下被遮（layout 检查器以 7 条 text_occluded 暴露）——改为显式钉模板 body.maxWidth（870，右缘 920 与图片槽左缘 970 保持 50px 间距）。④ verse 容器补 data-layout-allow-occlusion 豁免：滚出窗行的静态 DOM rect 越过窗口下缘与底部元素（进度条）相交触发 text_occluded 误报（portrait 底部留白只有 80px 时暴露，竖屏 1920 高留白够大不触发），与既有 allow-overlap/allow-overflow 豁免同源机制；横屏宽度回归改由 selftest 源码级断言守（带图/无图两分支 + 禁止内联 width:100%）。文档同步 SKILL.md（横屏布局策略、portrait 参数、--sub-mode 节）与 rendering.md（双模式描述、verse 窗口位置）。真实验证：demo3 四组合（bar 横屏/verse 横屏/verse vertical/verse portrait）各自 hyperframes check 全过（Layout 0 issue，Contrast 34/34、30/30、31/31、28/28）+ selftest 全绿 + dev/check 14/14。"
+    },
+    {
+      "version": "1.5.27",
+      "date": "2026-08-21",
+      "summary": "sub_mode 默认改为按画幅解析：横屏 bar（经典底部字幕条+正文卡，图文讲解常见形态）、竖屏家族（vertical/portrait）verse（歌词式句子流，短视频常见形态）。实现：generate_html 的 sub_mode 参数默认 None、在 portrait 归一化之后按画幅解析（库调用方不传也得到正确产物）；gen_hyperframes CLI --sub-mode 默认 None 透传；run.py 单画幅先解析成显式值（报告 params 记实际生效模式，check_series drift 可比），--aspect both 保持 None 透传由 gen 按画幅各自解析（横 bar+竖 verse，单值解析会把横屏也强制成 verse）且不传 --sub-mode 旗标，报告 params 记 None（与 speed/voice_id 同语义：默认值跳过不比）。selftest：两处横屏调用显式 verse（断言的是 verse 形态 DOM），新增 20f 默认解析断言（横/竖/portrait 三画幅）与 run.py 解析行断言。SKILL.md/rendering.md 的 --sub-mode 节改为按画幅默认 + both 模式说明。dev/check 14/14。"
+    },
+    {
+      "version": "1.5.26",
+      "date": "2026-08-21",
+      "summary": "新增 --aspect portrait 紧凑竖屏画幅（3:4 即 1080x1440）：复用竖屏布局家族（generate_html 本体内把 portrait 归一化为 data-aspect=vertical，库调用方直接传 aspect=portrait 也能得到正确产物），v_compact 只切紧凑参数——顶部留白 220→100、底部 verse 190→80 / bar 260→190、图片槽统一 4:3（1:1 方图加 300px 句子流在 1440 高度放不下）。用途：抖音/快手沉浸式 feed 对标准 9:16 按高度铺满裁两侧（20:9 屏每侧 118-135px），3:4 非标准比例按宽度适配零裁切。run.py --aspect 接入 portrait（渲染目标按 1080x1440 校验；portrait 不进 both 轮换，走单画幅路径；check_series 走通用 params 对比自动纳管）。SKILL.md 新增「紧凑竖屏」节，rendering.md 补 portrait 几何。selftest 新增 20e（归一化/紧凑参数/bar 留白）与 run.py 接入断言。真实验证：demo2 out.portrait.mp4 渲染 + verify_render 7/7（1080x1440, DAR 3:4）+ check Layout 0 issue / Contrast 31/31 + dev/check 14/14。"
+    },
+    {
+      "version": "1.5.25",
+      "date": "2026-08-21",
+      "summary": "竖屏 verse 句子流窗口上移 80px（用户指定）：verse 模式竖屏内容卡 padding-bottom 110→190（verse 靠 margin-top:auto 钉底，底部留白即窗口距屏幕底部的距离），bar 模式 260 不变；横屏零改动。selftest 竖屏方槽断言同步 190，rendering.md verse 竖屏几何补底部留白 190px。真实验证：demo2 竖屏 HTML 重生成 + hyperframes check（Layout 0 issue，Contrast 31/31）+ 重新渲染 out.vertical.mp4 + verify_render 全过。"
+    },
+    {
+      "version": "1.5.24",
+      "date": "2026-08-21",
+      "summary": "字幕/内容呈现改为双模式可选（用户指定'原来的形式还是保留着，这两种作为一种模式进行区分'）：新增 --sub-mode 参数（gen_hyperframes.py/run.py 同名透传），verse（默认）= 上一版的歌词式句子流，bar = 恢复的经典形式（底部字幕条 + 正文要点卡片 + 说话人标签显示层，配色按字幕条背景亮度自适应深/浅色系）。分支只影响显示层：cue 数据层（t/d/si/lines/speaker/spk）两模式同构，长句切行参数按模式分流（verse 竖屏整句渲染、bar 每屏两行）；竖屏图片槽随模式变化（verse 1:1 方图 980×980、bar 4:3 横版 980×735 给正文卡留竖向空间，内容卡 padding-bottom 110/260 分流）。template.json 恢复 bar 需要的 subtitle.height/padding/maxWidth（verse 只读 fontSize）。timeline 注册移至内联脚本末尾（同步流内行为等价）：hyperframes lint 的 gsap_timeline_registered_before_async_build 规则按源码位置判定注册是否早于 document.fonts.ready，bar 模式 JS 里 Array.from 的 '.from(' 被补间正则误判，注册线在 fonts.ready 之后即消除误报。sub_mode 纳入系列锁定（run.py 报告 params + check_series.py drift 对比）。文档：SKILL.md/--sub-mode 节、rendering.md 双模式描述（替换'sub-bar 已整体移除'旧表述）、image_options.md 竖屏图片槽按模式分流。真实验证：demo 四变体（verse/bar × 横/竖）重新生成，hyperframes check 隔离轮换全过（bar 横屏 Layout 9 采样 0 issue、Contrast 33/33；bar 竖屏 0 issue、34/34；verse 横屏回归 29/29）+ selftest 双模式断言 + dev/check 14/14。"
+    },
+    {
+      "version": "1.5.23",
+      "date": "2026-08-21",
+      "summary": "横屏与竖屏统一为'内容与字幕融合'的 verse 句子流（用户指定'横屏也把字幕取消了 改成像竖屏一样的滚动字幕'）。sub-bar 底部字幕栏从所有画幅整体移除（HTML/CSS/JS/说话人显示层；cue 的 speaker/spk 数据层保留）；verse 改为横竖屏共用：横屏钉在左列底部（left:50、宽 870 与内容卡同宽、高 300、bottom:60 → 窗口 y 720-1020，不与右侧图片槽重叠），竖屏保持 flex 钉底（margin-top:auto，仅覆盖定位差异）；有图段正文卡隐藏（两画幅同规则，无图段保留卡片兜底）。滚动出窗的已播行 DOM rect 会越过窗口上缘被 layout 检查器误报 content_overlap，verse 容器加 data-layout-allow-overlap 豁免（视觉上已被 overflow:hidden 裁剪，活动行锚定窗口内 60px，真实重叠不可能）。template.json 清掉不再被读取的 subtitle.height/padding/maxWidth（保留 fontSize 供 verse 字号）。真实验证：demo 横竖两轮隔离 check（Layout 0 issues，Contrast 29/29、33/33）+ demo2 竖屏 check（31/31）+ headless 顺序逐帧 seek 验证 gap 帧高亮保持与句切换正确 + selftest/dev check 全过。"
+    },
+    {
+      "version": "1.5.22",
+      "date": "2026-08-21",
+      "summary": "横屏左列左边距 80→50px（用户指定；gen_hyperframes.py 硬编码处，与图片槽 right:50 对称构成同一套页边距），释放的 30px 加到内容卡宽度：body.maxWidth 840→870（template.json），卡右缘保持 920、与图框（左缘 970）间距仍为 50px 不变。竖屏不受影响（左列位置被 CSS left:auto!important 覆盖，模板值不参与竖屏布局）。真实验证：demo 横屏 HTML 重生成 + headless 实测几何（标题组 left:50、卡 50→920、图框 970→1870）+ hyperframes check（Layout 0 issue，Contrast 33/33）+ dev/check 14/14。"
+    },
+    {
+      "version": "1.5.21",
+      "date": "2026-08-21",
+      "summary": "图片槽尺寸调整（用户指定）：横屏 860×680→900×700（template.json），竖屏 984×984→980×980（.seg-card 侧边距 48→50px，1080−50×2=980，标题/图片/句子流仍同轴对齐）。横屏几何校验：图框底部 868.4 < 字幕条顶 904（间隙 35.6px 安全）；图框左缘移至 970，body.maxWidth 880→840 使正文卡右缘 920，与图框保持 50px 间距不变（880 时只剩 10px 太挤）。填充率同步：4:3 图 96%（原 95%）、方图 78%（原 75%）。文档同步 SKILL.md/rendering.md/image_options.md/gen_charts.py 注释，selftest 方槽断言加 980 侧边距检查。真实验证：demo2 竖屏 + demo 横屏 HTML 重生成 + hyperframes check（Layout 0 issue）+ dev/check 14/14。"
+    },
+    {
+      "version": "1.5.20",
+      "date": "2026-08-21",
+      "summary": "竖屏两项视觉修正（用户反馈；横屏零改动）：① 图片槽改正方形——aspect-ratio:1/1（约 984×984），替换上一版的 flex 弹性填充；flex:0 1 auto 允许极端长标题（3 行+）时优雅收缩而非溢出裁切；标题行数差异改由图片与句子流之间的留白吸收（verse 仍钉底，窗口齐平不变）。方图填充率 100%、4:3 约 75%。② verse 窗口首尾虚化修复——mask 渐隐区（上下各 14%≈42px）正好压在首句/尾句上：clip 上下加 60px 呼吸内边距，滚动锚点从 20px 同步改为 60px（首句 active 时落在 y60、尾句收尾在 y240，均在渐隐区外；offsetTop 缓存天然含 padding 无需改动）。selftest 20c 断言同步（square slot + padding/anchor 一致性两条），rendering.md 与 image_options.md 数字同步。真实验证：demo2 竖屏 HTML 重生成 + hyperframes check（Layout 0 issue）+ dev/check 14/14。"
+    },
+    {
+      "version": "1.5.19",
+      "date": "2026-08-21",
+      "summary": "竖屏开场/收尾标题恢复垂直居中（用户反馈顶部贴边太丑；横屏零改动）。上一版把标题挪到顶部 220 是对齐诉求的过度矫正——恢复 margin:auto 0 后 flex 自由空间被三个 auto margin（标题上下 + verse 的 margin-top）均分，数学上 verse 顶边仍恒为内容盒底-300px（H+F=1590 不变），即标题居中与窗口齐平两个诉求同时成立、互不牺牲：开场/收尾标题垂直居中于句子流上方空间（中心约 y865），五个段落窗口顶边仍严格同一位置。selftest 20c 断言反转（标题居中而非在顶），rendering.md 同步。真实验证：demo2 竖屏 HTML 重生成 + hyperframes check（Layout 0 issue）+ dev/check 14/14。"
+    },
+    {
+      "version": "1.5.18",
+      "date": "2026-08-21",
+      "summary": "竖屏段落间对齐（用户反馈：开场/收尾标题往上挪 + 各段落句子流窗口上边界齐平；横屏零改动）。实现：① verse 统一 margin-top:auto 钉在内容区底部——所有段落（含开场/收尾）窗口上边界严格同一位置（内容盒底-300px）；② 图片从固定 52% 高改为 flex:1 1 0 弹性填充标题与句子流之间的全部空间（margin:48px 0）——标题行数差异由图片高度吸收、不传导给 verse 位置，图片同时变大（单行标题下约 984×1035，原 52% 实际约 984×827——百分比高度按内容盒解析，旧文档写 998 是按整屏算错的，本次一并修正）；③ 开场/收尾标题去掉垂直居中（margin:auto 0），与内容段标题同在顶部 220px（文字仍居中），中部留白留给呼吸。flex 细节：grow 因子消耗全部正自由空间后 auto margin 才参与分配——内容段图片把空间吃满、verse 的 margin-top:auto 归零（位置由结构决定），开场/收尾没有 grow 项、auto margin 吸收全部剩余空间钉底，两种路径殊途同归到同一位置。selftest 20c 断言同步（verse 钉底/图片弹性/开场标题在顶），rendering.md 与 image_options.md 竖屏描述同步（含 998→自适应高度的修正）。真实验证：demo2 竖屏 HTML 重新生成 + hyperframes check（Layout 0 issue）+ dev/check 14/14。"
+    },
+    {
+      "version": "1.5.17",
+      "date": "2026-08-21",
+      "summary": "注释/文档卫生清理（零行为变更，用户要求删除'历史碎碎念'与文档内版本号引用）。原则：规范文档只陈述当前行为（版本沿革归 changelog 单一来源）；脚本注释只保留技术因果，剥离'哪版改的/用户反馈/实跑暴露/review P1P2'式变更叙事。清理范围：① 文档 4 份 7 处——SKILL.md（v1.5.11 起默认开启等 2 处）、rendering.md（v1.5.11 起默认生成、1.4.4 起不再有自动版式校验 2 处，并修复删注记后残留的孤立括号）、image_options.md（'v1.5.12 前此规范是…方框时代的遗留'整句）、pitfalls.md #15 解决段（被淘汰旧版兜底的对比叙事）。② scripts/*.py 12 个文件 35+ 处——gen_hyperframes.py（v3.5/v4.2/v5.0/v5.8/v1.5.x 标签、用户反馈引语、'此前X现在Y'句式，一律改写为现在时技术因果）、run.py（1.4.4 墓碑注释改为现在时'不设独立版式几何校验步骤'的决策陈述）、pipeline.py（v5.0/v5.1/v5.8 三处）、selftest.py（断言名与注释里的版本号、review P1/P2 出处标注共 9 处；顺手修复 12/13 节号错位）、search_images.py/_contracts.py/_theme.py/_script_utils.py/split_series.py/verify_render.py/build_from_structured.py/gen_charts.py（'此前'句式与日期注记各处）。③ dev/check.py 与 run_eval.py——门禁 docstring 里的事故故事（'1.4.2 曾漂移到 1.3.1 无人发现'等 4 处）压缩为门禁目的陈述。保留判断：pitfalls.md 条目本身的事故描述（该文档性质即经验教训）；rendering.md --gpu 实测注记的日期（staleness 判断依据）；所有技术因果（为什么必须有这条防线/这个默认值）。验证：dev/check 14/14 全绿（selftest 300+ 断言含 run_eval 集成测试，版本一致性、文档漂移门禁通过）。"
+    },
+    {
+      "version": "1.5.16",
+      "date": "2026-08-21",
+      "summary": "竖屏 verse 句子流两处修正（用户实跑反馈）：① 滚动参照系 bug（P1）——verse-clip 无定位，verse-line.offsetTop 相对绝对定位的 seg-card（首行≈1500px 而非 0），滚动公式 y=20-act.top 恒被下限钳到 winH-clipH：不管播到哪句都滚到段落尾部，第一句永远在窗口外、长段落观感'像从中间开始'（用户描述'内容居中效果/第一句被隔到滚动框之外'）。修复：.verse-clip 设 position:relative，行 offsetTop 回到相对 clip 的稳定值（懒缓存逻辑不变仍 seek-safe）。② 窗口位置——verse 从 margin-top:auto 钉底改为紧跟图片下方 48px（与图上方间距对称），段落收尾剩余留白自然沉到屏幕最下方（用户：'留白留在最下方'）；开场/收尾保持钉底（标题垂直居中时 verse 底部位置与内容段基本对齐）。selftest 新增 20c 断言块：真生成竖屏 HTML 验证 clip 定位/窗口间距/开场钉底/data-i 行索引/si cue 字段/横屏无 verse DOM（6 条，防参照系回归）。真实验证：demo both 全管线两轮 check + 双渲染 + verify + dev/check 14/14 通过。"
+    },
+    {
+      "version": "1.5.15",
+      "date": "2026-08-21",
+      "summary": "竖屏布局按用户设计稿重构（横屏零改动）：① 删标题高亮块（display:inline+半透明底色太丑，连带删除失去使用方的 css_vert_title_bg 变量）。② 大标题：配图段 52→72px、开场/收尾 82→88px、无图内容段 66→76px。③ 顶部边距 150→220px。④ 图片居中偏上：改为固定 52% 高度块（不再 flex 撑满），几何中心约屏幕 48%。⑤ 内容与字幕融合——歌词式句子流（verse）：正文卡与底部 sub-bar 在竖屏全部隐藏，图片下方固定 300px 窗口逐句展示段落全部句子，当前句高亮加粗（opacity 1/700 字重）、已播句 0.38 淡出、未播句 0.62，窗口随播报平滑滚动（CSS transition 0.45s），上下缘渐隐 mask 柔化滚动边界；cue 数据新增 si（句子全局序号）供 JS 定位高亮行，开场/收尾段落同样有 verse 且位置一致（段落切换字幕区不跳）。信息不丢失：正文每句都会在 verse 里逐句完整呈现。已知取舍：竖屏 verse 模式不显示说话人标签（横屏 sub-bar 保留）。工程质量：verse 容器标 data-layout-allow-overflow（歌词滚动溢出是有意设计，消除 Layout 检查 7 条 info）；onUpdate 内 DOM 测量做懒缓存+fonts.ready 清缓存（布局值不受 seek 顺序影响、transform 赋绝对值幂等，seek-safe；缓存量一次后避免逐 cue 强制 reflow），留下的 gsap_callback_dom_measurement Lint warning 经分析为误报（测量值恒定非 stale）；selftest cue 解析正则同步新格式（{t,d,si,lines}，容忍 si 缺省——门禁抓到后修复）。真实验证：demo both 全管线三轮（含迭代）两轮 check + 双渲染 + verify 通过，dev/check 14/14。"
+    },
+    {
+      "version": "1.5.14",
+      "date": "2026-08-21",
+      "summary": "竖屏布局重构（用户反馈'竖屏有点丑'，几何诊断出四个问题并一并修复，横屏零改动）：① 底部大空洞——旧布局图片框 55% 封顶后剩余 ~436px 空白全部堆在字幕栏下方（字幕浮在半空）；字幕栏改为 margin-top:auto 钉在屏幕底部，所有段落字幕位置一致不随内容量跳动。② 内容段正文卡被 display:none 整个隐藏（1920 高的屏幕只有标题+图，显得空）；恢复显示，形成'标题→正文卡→图片→字幕'四层纵向堆叠。③ 开场/收尾标题贴顶 + 底部 ~1200px 空洞；标题区 margin:auto 0 垂直居中，字幕栏绝对定位钉底（删除 #opening sub-bar margin-top:60px 补丁式规则）。④ 侧边距混乱（标题 x=28/图框 x=36/正文卡 x=28）；统一 48px，标题文字、正文卡边缘、图片框三者对齐；图片框宽度 calc(100%-16px) 居中改为 100% 满列宽。文档同步：rendering.md 竖屏布局描述、image_options.md 竖屏槽填充率（4:3 约 78%/方图约 96%，槽 984×947）。真实验证：demo both 全管线（两轮 check + 双渲染 + verify）通过。"
+    },
+    {
+      "version": "1.5.13",
+      "date": "2026-08-21",
+      "summary": "修复 --aspect both 在第 5 步 b 必挂的 P1（用户实跑暴露，两层约束叠加：① hyperframes check 对项目内两个根级 composition——index.html + index.vertical.html——报 multiple_root_compositions 错误退出，而这两个文件正是 both 模式自己生成的；② check CLI 不像 render 支持 -c 指定入口，且只认 index.html 文件名作 composition 入口——隔离横屏后 index.vertical.html 独自在场也报 No composition found）：run.py 的 check 步骤在 both 模式下分两轮执行——横屏轮把 index.vertical.html 临时改名为 *.disabled 隔离（不匹配 *.html glob）；竖屏轮把 index.html 隔离、index.vertical.html 顶替 index.html 名义上场；两轮均 try/finally 保证无论成败都恢复原名。快照按画幅分目录保留（snapshots.landscape/ snapshots.vertical，替代原先两轮互相覆盖）。selftest 补源码断言（此前 both 断言只查字符串、从未真跑全管线故未暴露此 bug——断言隔离/恢复关键行存在）。真实验证：demo both 全管线两轮 check（Layout 0 issue、Contrast 横 33/33 竖 21/21）+ 双渲染 + 双校验通过。"
+    },
+    {
+      "version": "1.5.12",
+      "date": "2026-08-21",
+      "summary": "配图比例规范从 1:1 方图改为 4:3 横图（v1.5.8 图框改 860×680 横版后规范未跟进——方图在横版槽填充率仅 75%、两侧各 ~90px 模糊底；demo 实测 4:3 达 95%）：① image_options.md 方式 B——1024×1024 → landscape_4_3（1152×864），附比例依据与双画幅折中说明（竖屏槽接近正方形，4:3 填充率 76% vs 方图 99%，默认横屏优先）；② gen_charts.py——三处 figsize=(12,12) 收敛为模块常量 FIGSIZE=(12,9)（1200×900，与方式 B 同一 4:3 约定），docstring 安全区提醒同步提及；公式安全区宽度按宽度计算、宽度未变故无需调整；③ selftest——bar/line/pie/curve 渲染测试新增 4:3 尺寸断言（imread 读实际像素 == 1200×900，防规范再漂移；用 matplotlib 自带 imread 不引入 Pillow 依赖）。方式 A（网搜图）/方式 D（视频）来什么收什么，不受影响。"
+    },
+    {
+      "version": "1.5.11",
+      "date": "2026-08-21",
+      "summary": "布局系统性调优（用户看 1.5.10 布局几何诊断图后拍板五项）：① 左边距 50→80——用户反馈 50 太贴边难看，标题/正文/badge 统一 80（badge.left、leftWithBadge 205、gen 硬编码与 .get 兜底同步）；② 左列垂直居中——无 badge 的配图段（flow 内容段）title-wrap top 改 topImageCenter 46% + translateY(-50%)，内容组在可用区（~80..904）垂直居中，消除正文卡片下方 ~124px 条状空白，卡片高度随行数变化自动均衡；竖屏 CSS 覆盖补 transform:none!important；③ 开场页章节预告——flow 模式此前开场默认全空（标题组下方 ~530px 空白），现在默认生成轻量 chips 一排（复用 recap-chips 样式+chipStagger 动画，各段标题+accent 描边；竖排编号目录仍是章节模式语言），opening_agenda 默认值不再按 flow 关闭（build_from_structured 同步）；closing_recap 保持 flow 默认关（历史用户反馈：清单式回顾'不知道哪来的'，收尾靠 closing_body/稿件）；④ 细节统一——subtitle.padding 120→50 与全局页边距一致，图框 glow 80→40px 不再扫到正文卡片右缘（模板化 image.glow）；⑤ demo 三张配图重生成 2560×1440 16:9（原 1024 方图在 860×680 横框中两侧 90px 模糊带、显示尺寸两轮放大均未变；text_to_image GET 端点会话内返回固定缓存，改用 ImageGen 工具生成）。selftest 断言同步（flow opening agenda 默认开、chips 生成/显式关闭/无竖排目录；closing recap 默认关不变）；SKILL.md/rendering.md/content_templates.md 三处 flow 行为描述同步。已知视觉点：chips 行 y≈470..530，开场下缘到字幕条仍有 ~370px 留白（居中版式留白属正常）。"
+    },
+    {
+      "version": "1.5.10",
+      "date": "2026-08-21",
+      "summary": "横屏副标题相对标题增加缩进（用户看 1.5.9 成片后调优）：template.json landscape.tagline 新增 indent:24，gen_hyperframes.py 的 tagline 行内样式在左对齐段落（has_image 且非 centerHorizontal）追加 padding-left——制造层级差、不和标题左缘对齐；居中版式（opening/closing、竖屏）不缩进（居中下偏移会破坏中轴线），竖屏保留既有 CSS padding-left:16px 缩进不受影响。rendering.md 布局元素清单同步提及 indent 键。"
+    },
+    {
+      "version": "1.5.9",
+      "date": "2026-08-21",
+      "summary": "横屏左列统一 50px 页边距 + 标题/图框小幅上移（用户看 1.5.8 成片后调优）：① 标题左边距——gen_hyperframes.py 配图段硬编码 120 → 50（flow 内容段/opening/closing 共用路径，与图框 right:50 构成左右对称页边距），template.json badge.left 100→50、leftWithBadge 225→175（badge 50+110+15），代码里两处 .get 兜底值同步 225→175 防漂移；② 正文卡片——删除横屏 body-text 的 margin-left:-40px（原把卡片拉到标题左侧靠内边距近似对齐文字，现在卡片与标题统一 50 左对齐，竖屏本就 margin-left:0 不受影响，centerHorizontal 分支随之合并）；③ 标题上移 topNews 100→80（badge.top 80→60 跟随）；④ 图框上移 top 50%→48%（顶边 200→178）。几何验证：标题底 170 < 图框顶 178（长标题贴图框顶角的风险反而消除），图框底 858 vs 字幕条顶 904 净空 46px。竖屏布局不动。"
+    },
+    {
+      "version": "1.5.8",
+      "date": "2026-08-21",
+      "summary": "横屏配图框改横版（用户看 1.5.7 成片后调优）：760×760 → 860×680（1.265:1），right 90→50、top 恢复 50% 居中；与正文列间距收到 50（正文 max-width 880 不动）。contain 填充率：4:3 照片 75%→92%、16:9 视频 56%→69% 明显受益；1:1 生成图/图表 100%→79%、3:4 竖图 75%→61% 留白增多（显示高度 680 vs 760 略小）——按用户内容以横图/方图为主的实际取舍。垂直几何更安全：y 200..880，上下净空各 200px、字幕净空 24px（优于 1.5.7 的 48% 上移方案），标题贴边风险回落到 1.5.3 水平。文档同步：SKILL.md/rendering.md/gen_charts.py 注释三处尺寸声明（gate doc_drift:image_size 强制）。已知视觉点：图框 glow（box-shadow 80px）在 50px 间距下会轻扫到正文卡片右缘，靠快照观察是否可接受。竖屏不动。"
+    },
+    {
+      "version": "1.5.7",
+      "date": "2026-08-21",
+      "summary": "横屏配图框放大：template.json landscape.image 680×680 → 760×760（显示面积 +25%，contain 填充下所有比例图片等比受益），right 110→90、top 50%→48%（上移补偿，底部只吃进字幕条透明渐变区 ~6px，字幕文字净空不受影响）；正文列 max-width 880 不动，文字框↔图框间距 170px→110px（原 9% 屏宽偏阔绰，常规分栏 gutter 3-5%）。竖屏不动（图框已占满内容宽度、高度受 flex 约束）。文档同步：SKILL.md/rendering.md 的 680×680 声明（gate doc_drift:image_size 强制）；顺带修正两处陈旧描述——rendering.md 竖屏图片'800×800 水平居中'（实际运行时被 vertical CSS 覆盖为占满宽度+flex 高度自适应）、gen_charts.py 两处注释声称 CSS object-fit:cover 会裁边（实际是 contain 从不裁边，SAFE_MARGIN_RATIO 留白实为排版美观考虑）。已知取舍：13+ 字长标题尾部可能贴到图框顶部圆角（现状 14 字贴边，恶化 1 字，软性贴边非遮挡）。"
+    },
+    {
+      "version": "1.5.6",
+      "date": "2026-08-21",
+      "summary": "search_images.py 输出降噪：本轮零新候选（--resume 下全部段落已有成品图，或搜索全部失败）时，[candidates] 候选清单与 [review]/--pick 审阅指引仍无条件打印——明明没有可审阅对象，属纯噪音（demo 实跑发现：3/3 已定稿时仍输出九条候选清单+pick 示例命令）。改为仅 cand_data 非空时打印，零候选时改打一行 [done] 收尾（含 images.json 现有定稿条数）；[reused] 合并写回 images.json 的落盘逻辑不受影响（run.py 缺图拦截依赖它）。有新候选时的输出不变。"
+    },
+    {
+      "version": "1.5.5",
+      "date": "2026-08-21",
+      "summary": "配图文件校验收敛为单一实现：gen_hyperframes.py 原本存在两套——main() 的 fail-fast 强校验（PIL verify + ffmpeg 全解码探测 + 视频超段落时长提示）与 generate_html() 内嵌的提示级弱校验（存在性 + PIL verify + 视频仅查 ≥1KB），CLI 路径同一张图 PIL verify 最多跑三遍（--aspect both 下 generate_html 被调两次），且弱校验探不出截断的 mp4、两套逻辑强度不同必漂移。强校验提取为模块级 validate_images_files(images, out_dir, seg_durs)（唯一实现，返回 missing/corrupt 列表，fail-fast 与否由调用方决定），main() 改为调用它；generate_html() 只做格式归一化，删掉内嵌弱校验及其专属的 output_dir 参数（仅弱校验使用，连带 main/selftest 调用点清理）；_contracts.validate_media_file_exists 与随之失去使用方的 MEDIA_IMAGE_EXTS 删除。行为不变：CLI 缺图/坏图仍在生成 HTML 前报错退出（run_eval 缺图退出码断言不受影响），Pillow/ffmpeg 缺失时同样优雅降级。"
+    },
+    {
+      "version": "1.5.4",
+      "date": "2026-08-21",
+      "summary": "全量代码评审修复（P2×1 + P3×5）：① run.py 无 STEFUN_API_KEY 时已有 images.json 被静默无视——has_images 只在有 Key 的并行分支里赋值，无 Key 手动走方式 B/C/D 补图后重 run.py 仍出纯文字版且无警告，与 SKILL.md『方式 B/C/D 不依赖此 Key』承诺相悖；改为 TTS/配图阶段结束后统一按 want_images and 文件存在 计算，无 Key 时沿用已定稿配图渲染（提示语区分『跳过搜图、沿用已有 images.json』与『纯文字版兜底』），覆盖率统计与缺图拦截对无 Key 手动流程同样生效（拦截提示指路 ImageGen/图表补图，不引导去跑需要 Key 的 search_images --pick）；SKILL.md 两处行为描述同步。② search_images.py --max-width/--max-height 实为最小尺寸过滤（w >= 阈值滤小图），命名与语义相反，改名 --min-width/--min-height，image_options.md 同步。③ internals.md 的 images.json 完整格式指针仍指向 1.5.3 已收敛掉的『方式 B/D』，改指文件开头「images.json 统一格式（四种方式共用）」节。④ .env.example StepFun 注释残留 1.4.12 已在 SKILL.md 修正的『缺 Key 回退 ImageGen 生图』旧口径。⑤ sources.md aihot curl 示例（$(date)/date -d）与 SKILL.md 手动并行示例（& + wait）为 POSIX-only，补 PowerShell 等价写法（curl.exe + Get-Date）与说明。⑥ run.py 缺图分支 json.load(open()) 改 with 收口文件句柄，_print_report_summary 不再硬拼『纯文字版兜底』后缀（原因字符串自带语义）。"
+    },
+    {
+      "version": "1.5.3",
+      "date": "2026-08-21",
+      "summary": "images.json 格式说明统一（单一信息源）：完整格式规范原本藏在方式 B 下面、方式 D 又重复一份完整示例——而该映射文件是 A/B/C/D 四种方式共用的。格式规范提升为 image_options.md 开头独立章节「images.json 统一格式（四种方式共用）」（type 扩展名自动判断细节从方式 D 并入 type 字段说明），方式 B 的完整格式节与方式 D 的 cat heredoc 示例缩成指针；SKILL.md『按方式 B 手写映射』指向同步修正为统一格式节。后续格式变更只改一处。"
+    },
+    {
+      "version": "1.5.2",
+      "date": "2026-08-21",
+      "summary": "images.json 单一对象格式收敛：删除文档里『旧格式（字符串）/新格式（对象）』双格式并列——两种值格式并存误导阅读，且把工具实际落盘的字符串标成『旧』本身就是文档漂移。对象格式成为唯一标准写法（图片/视频统一 {src: ...}，静态图只需 src，视频按需加 type/loop/muted/poster），字符串降级为读取兼容（旧文件/手写简写，等价 {src: ...}），不再出现在任何示例里。search_images.py 两处落盘（--pick 采纳、--resume 复用写回）统一写对象并归一化继承的字符串条目（新增 _normalize_images_map）；gen_charts.py 收尾提示、gen_hyperframes.py docstring/注释、image_options.md（方式 B 重写为单一格式+一行兼容注记、方式 D 示例全对象）、run_eval.py fixtures 同步对象格式；selftest pick 断言改为对象值并验证字符串继承条目归一化落盘。"
+    },
+    {
+      "version": "1.5.1",
+      "date": "2026-08-21",
+      "summary": "方式 C 新增 curve 函数曲线类型：表达式在受限 numpy 命名空间求值 + 真·数值 x 轴 + 多曲线同图对比（复利 vs 单利这类『曲线分化即论点』的讲解经典视觉），弥补 line 类型 x 轴为分类标签、需手算采样点而实际画不了函数图像的空白；x_min/x_max 域校验与全 NaN 定义域错误（如 log 负数区间）fail-fast，常数表达式自动广播。几何示意图（三角形/圆/角度标注）明确不做成配置类型（图元与标注差异太大，JSON 化会变成无限膨胀的绘图 DSL），替代路径写进 image_options.md 规则 5：直接手写 SVG 引用（gen_hyperframes 对 .svg 按存在性校验）或简单几何示意走方式 B。selftest 新增 4 条 curve 断言。"
+    },
+    {
+      "version": "1.5.0",
+      "date": "2026-08-21",
+      "summary": "配图路由增强：路由判断先于工具调用。SKILL.md 第 4 步开头明确先逐段判断配图方式、只把方式 A 的段落交给搜图，不要默认全部先搜一遍；search_images.py 新增 --sids（只搜指定段落，未知 sid 打警告防手滑），run.py 透传 --search-sids，消除一键编排对全部内容段落无条件搜图的结构性搜图优先偏向（实例验证中数据类段落本应走图表却被搜图即由此产生）；gen_charts.py 新增 formula 类型——matplotlib mathtext 把数学公式渲染成 SVG（本地零额度、字号自适应安全区、未写 $ 定界符自动包一层），路由表『数学推演走方式 C』从只有 bar/line/pie 变为公式本体也有产出工具；image_options.md 方式 A 标题去掉与路由表矛盾的『推荐』字样。selftest 新增 formula 渲染/拒绝与 --sids 过滤共 5 条断言。"
+    },
+    {
+      "version": "1.4.15",
+      "date": "2026-08-21",
+      "summary": "分步执行补上缺图护栏：gen_hyperframes.py 新增内容段落（news/seg，与 run._image_coverage 同口径）配图覆盖率提示——缺映射时打一行 [warn]（只提示不阻断），消除『搜图无结果应转 ImageGen 补图』的拦截只存在于 run.py 一键编排、分步执行完全静默的护栏盲区；SKILL.md 横屏布局策略写清『按需配图』的前提是内容性质不需要图，搜图无结果/漏配不算按需留空（实例验证中 seg5 漏配即由此产生）；selftest 新增 3 条覆盖率断言。"
+    },
+    {
+      "version": "1.4.14",
+      "date": "2026-08-21",
+      "summary": "移除 agents/ 目录及 openai.yaml（OpenAI 平台展示配置：display_name/short_description/default_prompt）：仅用于平台侧展示信息，不参与技能任何运行时行为；SKILL.md 项目结构图同步移除对应两行。"
+    },
+    {
+      "version": "1.4.13",
+      "date": "2026-08-21",
+      "summary": "移除 budget.py 的 cost 子命令（配图 credits 成本预估）：区间只有拍脑袋的 5-10 credits/张常数与 0～段数×10 的宽区间，信息量有限；真正拦住花费的是SKILL.md 既有的『实际调用 ImageGen 生图前提醒用户』要求，cost 无增量价值。保留 plan（写稿前时长规划）与 estimate（写稿后时长核对）；selftest 同步移除 3 条 cost 断言（319→316），SKILL.md 删除对应可选节并更新目录注释。"
+    },
+    {
+      "version": "1.4.12",
+      "date": "2026-08-21",
+      "summary": "深度 review 文档漂移修复（第二批，纯文档与文案，无逻辑变更）：① 缺 Key 口径统一——实际行为是未配 STEPFUN_API_KEY 时 run.py 跳过配图退回纯文字版，原 API 密钥节误写“退到 ImageGen 生图”与一键编排节自相矛盾，两处改为一致并注明方式 B/C/D 不依赖该 Key、仅逐段候选不合适（--pick 0）才回退 ImageGen；② 第 2 步示例场景标注纠错——反向传播示例误标为“AI 日报”场景，改为“知识讲解”；③ 第 5 步渲染命令把“人工审帧”补为显式步骤（1.4.4 删除自动版式校验后视觉审帧是版式问题唯一防线，原先只在 rendering.md 有、SKILL.md 主流程缺失），一键编排节注明run.py 不停在审帧、需把关版式用 --until html；④ 模式命名统一——以对照表权威名“完整讲解模式/精选摘要模式”收敛全部遗留变体（讲解/拆解、精选播报、新闻播报模式），涉及 SKILL.md/sources.md/content_templates.md/budget.py 帮助文案/evals.json 期望文案；⑤ 去重收敛——第 2 步规则 7/8 与 content_templates.md 重复的剑冢示例、承接句式例句改为指针；⑥ 双索引收敛——“关键陷阱”节与附录重复的 3 段参考索引收拢为 1 段指针，目录中 references 列表行删除（附录为唯一阅读索引）；⑦ references 修复——tts_pipeline.md 英文音色适用场景由“英文内容”改为“中文稿件里的英文术语/品牌名”（与不适用场景声明对齐）、image_options.md AI 生成视频入口补 Seedance 优先（与 SKILL.md 第 4 步口径一致）、pitfalls.md 删除 changelog 里不存在的 1.3.5 版本号引用、SKILL.md 首次必读注明 internals 已从 pitfalls 拆分（1.4.8）"
+    },
+    {
+      "version": "1.4.11",
+      "date": "2026-08-21",
+      "summary": "深度 review 全量修复（四批补丁 + 收尾）：A TTS 管线——synth_sentence 新合成前清理上一轮残留 sidecar（.orig.wav/.spd/.spd.tmp.wav/.failed；改稿不带 --resume 重跑时旧 .orig.wav 会让 atempo 把新音频整体丢弃，成片念旧稿配新字幕，P1）、BGM 混音 amix 加 normalize=0（默认两路各乘 1/2，人声被无感衰减 -6dB，P2）、--check-env 可独立运行（--source 改为 check-env 早退后再校验必填）、generate_silence 显式 UTF-8 解码+超时落 wave 兜底；B 渲染——gen_hyperframes 补 get_ffmpeg 导入（视频探测处 NameError，P1）、字幕行内透明度不再与整体 fade 双重相乘（lop*op 平方化）；C 编排——--aspect both 渲染 out.mp4+out.vertical.mp4 双成片并分别 verify（此前只渲染横屏，P2）、--until images 改为「看完覆盖率即止」调试语义（缺图拦截之前正常退出 0，不再被 exit 2 劫持）、TTS/配图并行失败的退出码传播与进程树收尾、--dry-run 不落制作报告；D 文档 13 处一致性修复（tts_pipeline.md manifest 格式重写为与 pipeline 实际产出一致、--on-fail 默认值纠正为 skip、SKILL.md --aspect both 与缺图重跑说明补全、pitfalls/internals/rendering 过时表述修正）；E 收尾——run_eval [8] 断言对齐新语义（改用 --until html 走缺图拦截）、selftest 新增 [22] 回归组（sidecar 清理/--pick 决策矩阵/check-env 独立/amix normalize=0/both 双成片/字幕透明度/get_ffmpeg 导入，302→319）"
+    },
+    {
+      "version": "1.4.10",
+      "date": "2026-08-19",
+      "summary": "深度 review 发现的格式修复：del_alias.py 用 Python text mode 重写 search_images.py 时把行尾符从 LF 无意识转成了 CRLF（617 处），1.4.9 相对 1.4.8 的唯一非预期变化。功能零影响（包内本就混合行尾），但会造成 git diff 整文件噪音，故还原为 LF。同时清理工作副本遗留的 config/templates 空目录（1.4.6 拍平目录树时的空壳，zip 不含空目录、此前打包未受影响）。内容零变更"
+    },
+    {
+      "version": "1.4.9",
+      "date": "2026-08-19",
+      "summary": "按用户评审意见删除 search_images.py 的 QUERY_ALIAS 硬编码实体映射表（约 14 个 AI 实体→中文检索词）与 translate_query 函数：该表为手工维护、易过时且存在错配（如 Vera Rubin 被写死成英伟达 Rubin 芯片），维护收益低于噪音成本；搜索 query 恢复为新闻标题原样提交，命中差时由已有下游 ImageGen生图兜底。属反 slop 切除，无功能回退（相关性评分 relevance_score 与 ImageGen兜底路径均保留）。search_images.py 语法校验通过，dev/check 14/14 与 selftest仍应全绿"
+    },
+    {
+      "version": "1.4.8",
+      "date": "2026-08-19",
+      "summary": "命名与文档结构打磨（P3，用户评审意见补做）：① 文档主题式命名——`references/pipeline_args.md` 改名为 `tts_pipeline.md`（覆盖 TTS 管线参数 / 预置音色 / manifest 字段，去掉机械的 pipeline_args 名），同步改 SKILL.md 全部引用（概述列表 / 目录树 / 步骤3 两处 / 附录索引）。② 拆分 `pitfalls.md` 的“内部机制速览（数据流 / 路径解析 / 缓存）”节为独立 `references/internals.md`，`pitfalls.md` 留指针并修正原“见下文条目 #9 / #2”的跨文件引用；SKILL.md 中 3 处指向该节的链接改指 internals.md。③ `agents/openai.yaml` 单文件目录保留不折叠——它是平台接口元数据（interface: display_name / short_description / default_prompt），由外部 loader 按 `agents/<provider>.yaml` 约定自动发现，包内无任何脚本读取，折叠会破坏技能加载，故保留。本版无功能 / 逻辑变更：文件数 43→44（新增 internals.md）；dev/check 14/14 与 selftest 296/296 仍应全绿"
+    },
+    {
+      "version": "1.4.7",
+      "date": "2026-08-19",
+      "summary": "目录/文档结构优化（用户评审意见）：① 删除 config/templates/default/ 过度嵌套层，template.json 直接落到 config/（load_template 全代码库只被写死调用 'default'，无任何 --template 或多模板选择逻辑，属'多实例结构只装一个实例'的过度设计）；同步改 _template.py（去 template_name 参数+拍平路径）、gen_hyperframes.py、selftest.py、dev/check.py、pitfalls.md 的引用。② 文档结构：把'首次执行前先通读 pitfalls'的提示从工作流之后（原第 456 行）前置到'核心工作流'之前，线性读者不再走完整个流程才被提醒；并软化原'关键陷阱'段重复的'先读'措辞。③ 附录'参考文档索引'由只列 4 篇补全为 6 篇完整索引（补 sources.md / content_templates.md）。P2 级，无功能变更，dev/check 14/14 与 selftest 296/296 仍全过"
+    },
+    {
+      "version": "1.4.6",
+      "date": "2026-08-19",
+      "summary": "按用户评审意见优化 SKILL.md 目录树：统一描述列对齐（之前长短不一、部分描述跨 2-3 行），把 11 个内部共享模块收口成一行 '_*.py' 概述，整体更紧凑可扫读；冗余文件排查结论——两次裁剪（check_layout 链 / requirements.txt）后 43 个文件全部被引用，无死代码可砍（仅 dev/ 为非运行时维护工具，已隔离保留，是本次安全迭代的 QA backbone）。目录树里 '18 条踩坑'/'10 条评估' 等计数与 doc_drift gate 保持一致"
+    },
+    {
+      "version": "1.4.5",
+      "date": "2026-08-19",
+      "summary": "按用户评审意见把根目录 requirements.txt 折叠进 SKILL.md（仅 2 个核心依赖 openai + Pillow，单独一个文件边际价值过低；且 SKILL.md 环境准备一节本就用内联 pip install 命令，requirements.txt 实际已成冗余，还曾导致 imageio-ffmpeg 这类可选依赖漏写漂移）：删除 requirements.txt，安装说明统一收口到 SKILL.md 环境准备（保留版本约束 openai>=1.0.0,<2.0、Pillow>=10.0.0）；同步修掉 5+1 处失效引用——pipeline.py 两处报错提示、gen_hyperframes.py / search_images.py / gen_charts.py 的报错指向、image_options.md 的描述，全部从'参见 requirements.txt'改为'见 SKILL.md 环境准备'；SKILL.md 目录树与安装段移除 requirements.txt 相关表述。dev/check.py 无 requirements.txt 相关 gate，不受影响"
+    },
+    {
+      "version": "1.4.4",
+      "date": "2026-08-19",
+      "summary": "按用户评审意见删除 check_layout 整条链（奥卡姆剃刀：已有简单内置方案 check --snapshots 关键帧 + agent 强制视觉审帧，另起无头浏览器量坐标的基础设施边际收益过低、维护成本偏高）：删除 scripts/check_layout.py、scripts/check_layout.js、scripts/_chrome.js、scripts/_layout_geom.js、根目录 package.json 共 5 个文件，回收约 450 行代码与一个 Node 依赖；同步清理 run.py（移除 --no-layout-check 参数与第 5 步 a2 版式校验调用）、selftest.py（移除 _layout_geom.js 几何单元测试块）、visual_regression.py（移除对已删脚本的引用）、SKILL.md（参数说明/渲染流程/输出契约三处）、references/rendering.md（第 0 步版式校验段与对应 blockquote）、build_from_structured.py（残留注释）；dev/check.py 移除 package_json 打包 gate（15→14 项，保留 version_consistency 与 toc_anchors 两条仍有价值的防漂移检查）。1.4.2 的 P1 打包遗漏 bug 根源（package.json）随之消失"
+    },
+    {
+      "version": "1.4.3",
+      "date": "2026-08-19",
+      "summary": "评审修复（外部 review 定位的打包/漂移问题，均为旧 gate 盲区漏进来的）：1) 补回根目录 package.json（声明 puppeteer-core ^25.8.0）——1.4.2 的 zip 漏打包它，SKILL.md/check_layout.js 指引的 `npm install` 会 ENOENT，版式几何校验这道 QA 装不起来；2) frontmatter version 1.3.1 → 1.4.3（1.4.0/1.4.1/1.4.2 连发三版都没 bump）；3) SKILL.md 目录'附录：架构参考'锚点修正为'附录：参考文档索引'（1.4.1 并 architecture.md 时正文标题改了、目录漏改，死链接）；4) 清理改名遗留：8 个脚本 docstring 首行与 template.json 描述里的旧名 'AI Daily Video'、run.py 报告文案'条新闻'、pitfalls.md 开头'AI 日报视频'（_assets.py 对旧 ai-daily-video 缓存目录的迁移逻辑是有意保留，不动）；5) dev/check.py gate 加固，新增三条打包完整性检查——frontmatter version==changelog current_version、SKILL.md 内链锚点对得上正文标题、package.json 存在且声明 puppeteer-core。selftest 303/303、run_eval 28/28、dev/check 15/15 全过"
+    },
+    {
+      "version": "1.4.2",
+      "date": "2026-08-18",
+      "summary": "agent 使用优先的负重清理（删除从未使用的投机性设施）：1) _html_utils.py（16 行，唯一消费方 gen_hyperframes，docstring 自认为将来复用而拆）内联回 gen_hyperframes.py 后删除；2) budget.py record/calibrate 校准子系统删除（全项目无一处 budget_calibration.jsonl，从未采样）——连带删除唯一为它服务的 _jsonl_log.py（57 行）与 selftest 16d/16e/16f 三组测试；plan/estimate/cost 三个在用子命令不变；3) dev/forward_test.md（从未执行过的 forward-test 人工协议）删除，check.py 同步移除 _check_forward_test_coverage 非阻断提醒；evals.json 保留（scope_declaration/evals_count 门禁依赖）。净减 3 个文件、约 380 行"
+    },
+    {
+      "version": "1.4.1",
+      "date": "2026-08-18",
+      "summary": "文档去重 + architecture.md 并入（agent 阅读优先原则）：1) image_options.md 删除与 SKILL.md 第 4 步重复的配图路由表、方式 D 节内逐字重复的额度策略段及与实战沉淀同义的两条 bullet；2) rendering.md 删除与 content_templates.md 重复的 flow 对照表和判断口诀，留单一权威指针；3) architecture.md（40 行）并入 pitfalls.md 首节「内部机制速览」（仅保留独有信息：数据流图/images.json 落盘规则/可逆变速，与 #2/#9/SKILL.md 第 5 步重复的规则改为指引），原文件删除，SKILL.md 4 处引用同步。references/ 7 份 -> 6 份，净减约 60 行重复文本；dev/check 13/13 全过"
+    },
+    {
+      "version": "1.4.0",
+      "date": "2026-08-18",
+      "summary": "三原则重构（第一性原理/奥卡姆剃刀/高聚集低耦合），外部行为零变化：1) 依赖方向修正——DEFAULT_CHARS_PER_SEC/DEFAULT_GAP/estimate_sentence_seconds 从 budget.py 收口到 _contracts.py，pipeline/split_series 核心管线不再反向依赖可选估算工具（dev/check.py gap 门禁同步改读 _contracts）；2) import 样板统一——pipeline/gen_hyperframes/search_images/verify_render/_tts 共 18 组 try/except ImportError sys.path 样板收敛为 1 行 insert+平铺 import（与 budget.py 等既有写法一致）；3) 颜色数学归位——_darken/_hex_to_rgb01/_relative_luminance/_mix 四个纯函数从 gen_hyperframes.py 拆到 _theme.py（公开名 darken/hex_to_rgb01/relative_luminance/mix），selftest [19]/[21] 改从 _theme 引用。净减约 130 行；selftest 321/321、dev/check 13/13 全过"
+    },
+    {
+      "version": "1.3.1",
+      "date": "2026-08-18",
+      "summary": "修复竖屏新闻卡片章节编号徽标(.badge)被 CSS display:none 隐藏的回归：删除 gen_hyperframes.py 第 914 行 [data-aspect=vertical] .badge{display:none!important}，恢复模板 vertical.badge(top:60/left:80/size:90) 既定位置，竖屏每章序号重新显示（标题已按 leftWithBadge:200 预留空档，无重叠）"
+    },
+    {
+      "version": "1.3.0",
+      "date": "2026-08-18",
+      "summary": "图片审阅改为纯独立审阅：删除 review_grid.py 拼图一审，run.py 缺图分支改为逐张列出候选原图全路径、提示 agent 全分辨率 Read 判断图↔题贴合度；同步更新 SKILL.md/image_options.md 文档与 dev/run_eval.py 回归测试"
+    },
+    {
+      "version": "1.2.0",
+      "date": "2026-08-18",
+      "summary": "修复竖屏目录↔标题/目录↔字幕间距、字幕长句3行溢出、配图剪断（cover→contain）；selftest 扩充至 329 用例全过"
+    },
+    {
+      "version": "1.1.0",
+      "date": "2026-08-18",
+      "summary": "配图路由升级 + 主题路由显性化（纯文档，无代码改动）：第 4 步按内容性质四分路由（故事性→动画 D 优先、专业概念数学物理→图表 C、抽象示意→ImageGen B、真实实体→搜图 A），方式 D 补动画细则（不盲目、多段一致性、单次时长内选择+长视频拼接例外+单配图单次优先）；rendering.md 主题节加内容类型→主题速查表与系列主题锁定规则"
+    }
+  ]
+}

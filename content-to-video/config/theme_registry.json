@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "version": "4.2.0",
+    "description": "Shared theme registry - read by gen_hyperframes.py (Python)"
+  },
+  "cream": {
+    "bg_gradient": "linear-gradient(135deg,#f7f3e9 0%,#eee7d6 45%,#f7f3e9 100%)",
+    "grid_color": "rgba(58,92,140,0.07)",
+    "text_color": "#22262b",
+    "body_bg": "rgba(34,38,43,0.045)",
+    "body_text": "rgba(34,38,43,0.72)",
+    "sub_bar_rgb": "247,243,233",
+    "soft_border": "rgba(34,38,43,0.18)",
+    "sub_text_shadow": "0 1px 3px rgba(247,243,233,0.85)"
+  },
+  "dark": {
+    "bg_gradient": "linear-gradient(135deg,#0a0e27 0%,#1a1a3e 40%,#0d1b2a 100%)",
+    "grid_color": "rgba(100,180,255,0.03)",
+    "text_color": "#fff",
+    "body_bg": "rgba(0,0,0,0.22)",
+    "body_text": "rgba(255,255,255,0.88)",
+    "sub_bar_rgb": "0,0,0",
+    "soft_border": "rgba(255,255,255,0.2)",
+    "sub_text_shadow": "0 2px 10px rgba(0,0,0,0.9)"
+  },
+  "tech": {
+    "bg_gradient": "linear-gradient(135deg,#050b18 0%,#0a1830 45%,#050b18 100%)",
+    "grid_color": "rgba(79,195,247,0.05)",
+    "text_color": "#eaf6ff",
+    "body_bg": "rgba(10,25,50,0.35)",
+    "body_text": "rgba(234,246,255,0.85)",
+    "sub_bar_rgb": "5,11,24",
+    "soft_border": "rgba(79,195,247,0.35)",
+    "sub_text_shadow": "0 2px 10px rgba(0,0,0,0.9)"
+  },
+  "alert": {
+    "bg_gradient": "linear-gradient(135deg,#2a0e0e 0%,#3c1414 45%,#2a0e0e 100%)",
+    "grid_color": "rgba(255,138,101,0.05)",
+    "text_color": "#fff5f0",
+    "body_bg": "rgba(0,0,0,0.25)",
+    "body_text": "rgba(255,245,240,0.88)",
+    "sub_bar_rgb": "20,5,5",
+    "soft_border": "rgba(255,112,67,0.35)",
+    "sub_text_shadow": "0 2px 10px rgba(0,0,0,0.9)"
+  },
+  "_default_accent": "#64b5f6",
+  "_accent_palette": [
+    "#ffd54f",
+    "#4fc3f7",
+    "#81c784",
+    "#ffb74d",
+    "#ef5350",
+    "#ba68c8",
+    "#f06292",
+    "#4dd0e1"
+  ]
+}
