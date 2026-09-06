@@ -63,9 +63,10 @@ DEFAULT_ACCENT = get_default_accent()
 # 念稿节奏的根治方式还是写稿时控制在一句一口气能念完的长度。
 LONG_SENTENCE_CHARS = 45
 # 自动 body（无显式 body 时的兜底）的视觉行预算：横屏模板正文区每行约
-# 20 字（maxWidth 880px / 字号 44px），标题区到字幕栏之间约 8 行空间。
+# 20 字（maxWidth 880px / 字号 44px），配图段正文卡锚定标题组最坏情况
+# （2 行标题 + tagline 槽，y 368）之下到字幕栏（y 904）约 7 行空间。
 AUTO_BODY_CHARS_PER_LINE = 20
-AUTO_BODY_MAX_LINES = 8
+AUTO_BODY_MAX_LINES = 7
 
 
 def _sentences_of(text):
@@ -128,8 +129,8 @@ def _collect_blocks(source, default_speed=None):
     # 顾虑也轻：chips 只露各段标题关键词）。
     opening_agenda = source.get("opening_agenda", True)
     # 结尾回顾标签条默认开（板块化内容的"要点复述"语言）；flow 自然叙事
-    # 模式保持默认关——chips + "等共 N 条"是清单语言，叙事型内容的收尾靠
-    # closing 稿件本身，不该出现条数提示。
+    # 模式保持默认关——chips 是清单语言，叙事型内容的收尾靠
+    # closing 稿件本身。
     closing_recap = source.get("closing_recap",
                                not bool(source.get("flow")))
 
@@ -193,13 +194,32 @@ def _collect_blocks(source, default_speed=None):
         else:
             budget = AUTO_BODY_MAX_LINES
             kept = []
+            truncated = False
             for s in sents:
                 need = max(1, -(-len(s) // AUTO_BODY_CHARS_PER_LINE))  # ceil
-                if kept and need > budget:
+                if need > budget:
+                    # 剩下的预算装不下这一整句。以前 `if kept and need >
+                    # budget: break` 让首句豁免预算——一句 300 字会把
+                    # budget 打成负数、挤掉后面所有句子，还溢出压到字幕栏
+                    # （这类重叠只能靠肉眼审帧发现，几何检查查不出）。
+                    # 现在首句超预算时按可用行数截断（+ 省略号）：宁可显示
+                    # 半句也不能让 body 全空只剩标题。后续句子则直接停——
+                    # 已经有两三行内容了，再挂半句反而显得没说完。
+                    if not kept and budget > 0:
+                        _take = budget * AUTO_BODY_CHARS_PER_LINE
+                        kept.append(s[:_take].rstrip() + "……")
+                        truncated = True
                     break
                 kept.append(s)
                 budget -= need
             body = "\n".join(kept)
+            if truncated:
+                # 不提示的话，"画面正文被砍了一半"是无头悬案。
+                print(f"[warn] seg{i} 的首句长度超出画面正文行数预算"
+                      f"（{AUTO_BODY_MAX_LINES} 行 × "
+                      f"{AUTO_BODY_CHARS_PER_LINE} 字），已截断并加省略号；"
+                      f"想完整展示请把长句拆短或手写该段 body。",
+                      file=sys.stderr)
         # 段落 id 用中性前缀 seg（skill 已不限于新闻制作）；下游
         # startswith(("news","seg")) 兼容旧 news 前缀的 manifest。
         blocks.append((f"seg{i}", title, seg.get("tagline", ""),

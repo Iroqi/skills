@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _ffmpeg import get_ffmpeg, parse_duration  # noqa: E402
 from _contracts import load_timing_manifest  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 
 STREAM_RE = re.compile(r"Stream\s+#\d+:\d+.*?(?:Video|Audio):\s*([a-z0-9_]+)", re.IGNORECASE)
@@ -36,21 +37,27 @@ FPS_RE = re.compile(r"Video:.*?(\d+(?:\.\d+)?)\s+fps")
 def parse_ffmpeg_info(stderr_text):
     """从 `ffmpeg -i` 的 stderr 提取 (duration_sec, video_codec, audio_codec)。
 
+    MP4 可携带封面附件流（mjpeg/attached_pic）：只取第一个视频流会把封面
+    当成主视频、编码检查误报 FAIL。多个视频流时优先取 H.264（本工具的
+    正片编码约定），没有才回退第一个视频流。
+
     Returns:
         tuple: (duration or None, video codec or None, audio codec or None)
     """
     duration = parse_duration(stderr_text)
 
-    video = None
+    videos = []
     audio = None
     for line in stderr_text.splitlines():
         m = STREAM_RE.search(line)
         if not m:
             continue
-        if "Video:" in line and video is None:
-            video = m.group(1).lower()
+        if "Video:" in line:
+            videos.append(m.group(1).lower())
         elif "Audio:" in line and audio is None:
             audio = m.group(1).lower()
+    video = next((c for c in videos if c.startswith(("h264", "avc1"))),
+                 videos[0] if videos else None)
     return duration, video, audio
 
 
@@ -81,6 +88,7 @@ def parse_video_size_fps(stderr_text):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="校验渲染产物：时长与 manifest 匹配、H.264 视频 + AAC 音频")
     parser.add_argument("-f", "--file", required=True, help="渲染输出的 MP4 路径")

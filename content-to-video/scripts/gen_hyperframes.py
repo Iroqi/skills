@@ -42,16 +42,61 @@ from urllib.parse import quote
 # generate_html() 真正的组装逻辑，避免继续膨胀成"什么都干"的大文件。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _theme import (get_theme_colors, get_default_accent, list_theme_names,  # noqa: E402
-                    darken, hex_to_rgb01, relative_luminance, mix, expand_hex)
+                    darken, relative_luminance, mix, expand_hex)
 from _template import load_template  # noqa: E402
 from _assets import ensure_local_gsap, GSAP_CDN_URL  # noqa: E402
 from _contracts import (load_timing_manifest, validate_images_json,  # noqa: E402
-                        classify_media_path)
-from _script_utils import split_subtitle_cues  # noqa: E402
+                        classify_media_path, is_content_sid)
+from _script_utils import (split_subtitle_cues, setup_stdio,  # noqa: E402
+                           subtitle_params_for)
 from _ffmpeg import get_ffmpeg, parse_duration  # noqa: E402
 
 
 DEFAULT_ACCENT = get_default_accent()
+
+
+def _file_identical(path_a, path_b):
+    """两文件内容是否一致（大小不同直接 False，否则按 1MB 分块哈希比较）。
+
+    音频自动拷贝的去重判定：只比大小会把"同大小不同内容"的旧拷贝误当
+    最新音频复用（换稿后 combined.wav 同名同大小是可能的）。
+    """
+    if not os.path.exists(path_b):
+        return False
+    if os.path.getsize(path_a) != os.path.getsize(path_b):
+        return False
+    import hashlib
+
+    def _digest(p):
+        h = hashlib.md5()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    try:
+        return _digest(path_a) == _digest(path_b)
+    except OSError:
+        return False
+
+
+_NUM_SPAN_RE = re.compile(r"(?<![&#])\d[\d,，]*(?:\.\d+)?")
+
+
+def wrap_numbers(escaped_html, accent):
+    """把正文行里已 esc() 的数字串包上 accent 着色 span（仅显示层强调，
+    与 scripts/check_facts.py 的抽取正则同源）。
+
+    本函数的输入是 esc() 之后的文本，而 esc() 会把 `'` 转成 `&#39;`——
+    数字字符引用里本身含数字，裸跑正则会把实体撕开（"Apple's 5G" 转义后
+    的 `&#39;s 5G` 中 `39` 和 `5` 都被误包，渲染出游离的 `&#`/`;` 乱码）。
+    `(?<![&#])` 挡住紧跟在 &/# 后面的数字：esc() 的全部产物里只有
+    数字字符引用会出现这个序列，正常文本中数字前的 &/#（如 "C#5"、
+    "&5折"）极为罕见且漏包一个数字无实害。
+    """
+    return _NUM_SPAN_RE.sub(
+        lambda m: f'<span class="num-accent" style="color:{accent}">{m.group()}</span>',
+        escaped_html)
 
 
 def esc(text):
@@ -171,6 +216,10 @@ def generate_html(manifest, audio_src, images=None,
     sentences = manifest["sentences"]
     segments = manifest.get("segments")
     images = images or {}
+    # <script src> 属性上下文转义：CLI 传的本地路径可能含 & 或引号，裸插
+    # 会破坏 head 结构（媒体路径都走了 quote/转义；这里不能 URL 编码——
+    # CDN 地址的 :/? 会被 quote 破坏）
+    gsap_src_attr = gsap_src.replace("&", "&amp;").replace('"', "&quot;")
 
     # portrait 归一化：紧凑竖屏复用 vertical 的布局家族，data-aspect 写
     # "vertical"（竖屏 CSS 选择器全部照常命中），v_compact 只切紧凑参数。
@@ -254,7 +303,7 @@ def generate_html(manifest, audio_src, images=None,
     tpl_anim = tpl["animation"]
     tpl_typo = tpl.get("typography", {})
 
-    # 从模板提取 CSS 变量值（替代原来的 if aspect == "vertical" 硬编码分支）
+    # 从模板提取 CSS 变量值
     _bl = tpl_layout["badge"]
     css_badge_top = f'{_bl["top"]}px'
     css_badge_left = f'{_bl["left"]}px'
@@ -269,6 +318,15 @@ def generate_html(manifest, audio_src, images=None,
     _bl2 = tpl_layout["body"]
     css_body_font = f'{_bl2["fontSize"]}px'
     css_body_max = _bl2.get("maxWidth")
+    # 横屏配图段正文卡的独立锚点（body 卡不进 title-wrap 文档流）：
+    # 取值由标题组最坏情况推导——topNews 80 + 2 行标题高
+    # （fontSizeNewsImage 72 × titleLineHeight 1.25 = 180）+ tagline 槽
+    # （marginTop 16 + fontSize 44 × lineHeight 1.4 ≈ 62）+ 30px 间距
+    # = 368，位置不随标题折几行浮动；tagline 是标题组的固定成员，
+    # 必须计入锚点推导，否则有 tagline 的段落正文卡会压上去（tagline
+    # 在 title-wrap 流内、随标题下移）。竖屏 body 卡是 flex 流内元素，
+    # 不消费该值。
+    css_body_top = _bl2.get("top")
 
     _sl = tpl_layout["subtitle"]
     # 字号两模式共用（verse 句子流行 / bar 字幕条，横竖屏各自模板值：
@@ -387,8 +445,8 @@ def generate_html(manifest, audio_src, images=None,
    seg-card（否则首行 offsetTop 巨大，滚动公式恒被钳到段落尾部——
    第一句永远在窗口外） */
 .verse-clip{{position:relative;padding:60px 0;transition:transform .45s cubic-bezier(.4,0,.2,1)}}
-.verse-line{{font-size:{css_sub_font};line-height:1.5;font-weight:500;color:{theme_colors["text_color"]};opacity:.62;transition:opacity .3s;padding:5px 0;text-align:left}}
-.verse-line.active{{opacity:1!important;font-weight:700}}
+.verse-line{{font-size:{css_sub_font};line-height:1.5;font-weight:600;color:{theme_colors["text_color"]};opacity:.62;transition:opacity .3s,color .3s;padding:5px 0;text-align:left}}
+.verse-line.active{{opacity:1!important}}
 .verse-line.past{{opacity:.38!important}}"""
         _v_verse_css = (
             '\n[data-aspect="vertical"] .verse{position:static!important;'
@@ -431,14 +489,30 @@ def generate_html(manifest, audio_src, images=None,
 
     _tgl = tpl_layout["tagline"]
     css_tagline_font = f'{_tgl["fontSize"]}px'
+    # tagline 显式行高：body 卡锚点（css_body_top）按"标题带 + tagline 槽"
+    # 推导，行高必须是确定值才能算出确定的锚点——依赖浏览器 normal
+    # 行高（约 1.14-1.2，随字体实现浮动）会让几何不可推导。
+    css_tagline_lh = _tgl.get("lineHeight", 1.4)
 
     _il = tpl_layout["image"]
     css_img_width = _il["width"]
     css_img_height = _il["height"]
+    # 横屏图片槽左缘（右缘锚定 + 定宽）：左列内容盒（body 卡/verse 窗口）
+    # 的右边界与宽度推导都以此为准，保持 50px 间距。
+    css_img_left_edge = width - _il.get("right", 100) - css_img_width
     if _il.get("centerHorizontal"):
         css_img_top = f'{_il["top"]}px' if isinstance(_il["top"], int) else _il["top"]
         css_img_pos = "left:50%;transform:translateX(-50%)"
     else:
+        # 横屏 top 是垂直中线（translateY(-50%)），取值由标题带推导：
+        # 上边缘 = topNews 80 + 1 行标题高（fontSizeNewsImage 72 ×
+        # titleLineHeight 1.25 = 90）+ 30px 间距 = 200——单行标题完整
+        # 避开图片；两行标题的第二行（y 170-260）只许横向停在图片左缘
+        # 以左，估算伸入图片区时生成期告警（见下方标题宽度估算）；
+        # 下边缘 = 200 + 700 = 900 = 1080 − subtitle.height 176 − 4
+        # （字幕条上缘 904 之上 4px 间隙，不与字幕条重叠）→ 高 700、
+        # 中线 550。改标题字号/行高/间距时必须同步重推上边缘；改图片
+        # 高度时同步重推 top（= 上边缘 + 高度/2）。
         css_img_top = _il.get("top", "50%")
         if isinstance(css_img_top, int):
             css_img_top = f"{css_img_top}px"
@@ -499,13 +573,13 @@ def generate_html(manifest, audio_src, images=None,
     # 收集所有内容段落的标题（按顺序），用于给开场页生成"内容目录"目录、
     # 结尾页生成"回顾"标签条——这两个页面原本只有大标题+副标题，画面偏空。
     # 数据直接从已有的 segments 里取（标题本来就有），不需要额外的 AI 调用
-    # 或新的 manifest 字段。封顶 8 条，避免条数多时列表溢出画面。
+    # 或新的 manifest 字段。条目全量呈现、不截断：条数多时开场目录靠
+    # 动态字号收缩适配（见 agenda 分支），chips 靠 flex 换行容纳。
     content_agenda = [
         {"title": seg.get("title", ""), "accent": expand_hex(seg.get("accent", DEFAULT_ACCENT))}
         for seg in segments
-        if (seg.get("id") or "").startswith("news") or (seg.get("id") or "").startswith("seg")
+        if is_content_sid(seg.get("id"))
     ]
-    AGENDA_MAX = 8
 
     # ── Build segment card HTML + GSAP ─────────────────────────────
     seg_cards = []
@@ -522,10 +596,11 @@ def generate_html(manifest, audio_src, images=None,
         # expand_hex 归一化：3 位 accent（如 #fff）拼 alpha 后缀（{ac}40/{ac}15）
         # 会得到非法 8 位颜色、整条 CSS 被浏览器丢弃——统一展开成 6 位
         ac = expand_hex(seg.get("accent", DEFAULT_ACCENT))
-        is_news = sid.startswith("news") or sid.startswith("seg")
+        is_news = is_content_sid(sid)
         has_image = sid in images
         # 首页/尾页是全屏居中布局，右侧视频会遮挡文字，跳过配图
-        if sid.startswith("opening") or sid.startswith("closing"):
+        _is_oc = sid.startswith("opening") or sid.startswith("closing")
+        if _is_oc:
             has_image = False
 
         # 动画参数快捷引用（从模板加载，替代硬编码数值）
@@ -593,22 +668,39 @@ def generate_html(manifest, audio_src, images=None,
         # 正文段配图时用更小的字号（模板 fontSizeNewsImage），一行能装更多字，
         # 配合上面的加宽，让长标题晚一点才换行、画面更舒展
         if is_news and has_image:
-            title_size = f'{_tl.get("fontSizeNewsImage", int(_tl["fontSizeNews"] * 0.86))}px'
+            _title_font_px = _tl.get("fontSizeNewsImage",
+                                     int(_tl["fontSizeNews"] * 0.86))
         else:
-            title_size = css_news_title_size if is_news else css_opening_title_size
+            _title_font_px = (_tl["fontSizeNews"] if is_news
+                              else _tl["fontSizeOther"])
+        title_size = f"{_title_font_px}px"
+        # 横屏配图段标题带只预留 1 行 + 第二行到图片左缘的宽度（图片框
+        # 上边缘 200 的推导前提，见上方 image 注释）：标题估算总宽超过
+        # "首行整行 + 第二行安全宽"时提前警告——第二行会伸进图片纵向
+        # 区间、可能压图。字宽按 CJK/全角 1em、其余 0.62em 估，渲染字体
+        # 的微差由 30px 间距吸收。
+        if aspect == "landscape" and has_image:
+            _tw_px = max(width - left_px - 110, 200)
+            _l2_safe = css_img_left_edge - left_px
+            _est_w = int(sum(
+                1.0 if (ord(c) >= 0x2E80 or 0xFF00 <= ord(c) <= 0xFFEF)
+                else 0.62 for c in seg["title"]) * _title_font_px)
+            if _est_w > _tw_px + _l2_safe:
+                print(f"[warn] {sid} 标题过长：第二行会伸入图片区"
+                      f"（图片上缘只预留 1 行标题带），建议缩短标题",
+                      file=sys.stderr)
         # 标题 top 读模板 title.topNews/topOther（topNews 是裸数字按 px，
-        # topOther 是带单位字符串如 "30%"，按类型分别处理）
-        _top_raw = _tl["topNews"] if is_news else _tl["topOther"]
+        # topOther 是带单位字符串如 "30%"，按类型分别处理）。横屏配图段
+        # 一律顶部锚定（topNews）：图片框上边缘固定在"topNews + 1 行标题
+        # 高 + 30px"的标题带之下（推导见上方 image top/height 注释），
+        # 单行标题完整避开图片；两行标题第二行伸入图片区时生成期告警。
+        # flow 模式配图段不做左列内容组垂直居中——46% 居中会让标题落进
+        # 图片纵向区间、长标题直接压图，与新闻段共用 topNews 顶部锚定。
+        _top_raw = (_tl["topNews"]
+                    if (is_news or (has_image and aspect == "landscape"))
+                    else _tl["topOther"])
         title_top = f"{_top_raw}px" if isinstance(_top_raw, (int, float)) else str(_top_raw)
-        # 左列垂直居中：无 badge 的配图段（flow 模式内容段）
-        # 左列内容组在可用区（顶部安全带 ~80px 到字幕条 ~904px，中心
-        # 492 ≈ 屏高 46%）垂直居中，消除正文卡片下方的条状空白——卡片
-        # 高度随行数变化时也自动均衡。带 badge 段保持 topNews 固定值
-        # （badge 钉在左上角，标题要跟它同行）。
         title_transform = ""
-        if has_image and not badge and not _il.get("centerHorizontal"):
-            title_top = str(_tl.get("topImageCenter", "46%"))
-            title_transform = "transform:translateY(-50%);"
 
         # 横屏 verse 开场/收尾：标题组（含 agenda/chips）垂直居中于底部
         # 钉位的 verse 窗口上方的空间（1080-380=700 的中心 350），而非
@@ -642,19 +734,40 @@ def generate_html(manifest, audio_src, images=None,
         body_line_count = 0
         agenda_count = 0
         recap_count = 0
+        numpop_ids = set()
         if seg.get("body"):
             # 过滤空行：body 尾部的换行符（手写 manifest 常见）不该渲染出
             # 空的 body-line div 和对应的 GSAP tween。
             body_lines = [l for l in seg["body"].split("\n") if l.strip()]
             body_line_count = len(body_lines)
-            body_items = "".join(
-                f'<div class="body-line" id="bodyline-{sid}-{j}">{esc(line)}</div>'
-                for j, line in enumerate(body_lines)
-            )
+            _body_parts = []
+            for j, line in enumerate(body_lines):
+                _wrapped = wrap_numbers(esc(line), ac)
+                if "num-accent" in _wrapped:
+                    numpop_ids.add(f"{sid}-{j}")
+                _body_parts.append(
+                    f'<div class="body-line" id="bodyline-{sid}-{j}">{_wrapped}</div>'
+                )
+            body_items = "".join(_body_parts)
             # 配图时正文框收窄（max-width 来自模板 body.maxWidth），
             # 与右侧图片保持明显间距；标题仍可占满标题区宽度。
             # 正文卡片左边距与标题对齐（同一套页边距，不用负 margin 近似）。
-            if has_image and css_body_max:
+            if aspect == "landscape" and has_image:
+                # 横屏配图段：正文卡是独立绝对定位盒，不进 title-wrap
+                # 文档流——锚定模板 body.top（标题组最坏情况 2 行标题 +
+                # tagline 槽 y 338 之下 30px = 368，位置不随标题折几行
+                # 浮动），左缘对齐标题文字
+                # （left_px）。宽度取"图片左缘 − 50px 间距 − 左缘"与模板
+                # maxWidth 的较小值：badge 段左缘 205，固定 870 宽会让
+                # 卡片右缘 1075 压进图片区（图片左缘 1010）。竖屏配图段
+                # 保持 flex 流内元素（vertical CSS 全量覆盖 .body-text），
+                # 走 max-width 分支。
+                _bw = max(300, min(css_body_max or 870,
+                                   css_img_left_edge - left_px - 50))
+                body_style = (f' style="position:absolute;left:{left_px}px;'
+                              f'top:{css_body_top}px;width:{_bw}px;'
+                              f'margin-top:0"')
+            elif has_image and css_body_max:
                 body_style = f' style="max-width:{css_body_max}px"'
             else:
                 body_style = ""
@@ -664,47 +777,40 @@ def generate_html(manifest, audio_src, images=None,
             # 与收尾页 recap 同一视觉语言——竖排列表+编号圆是章节模式的
             # 语言，flow 不用。manifest 写 "agenda": false
             # 可显式关闭。
-            _oc = content_agenda[:AGENDA_MAX]
             chips = [
                 f'<div class="recap-chip" id="recapchip-{sid}-{k}" '
                 f'style="border-color:{item["accent"]}">{esc(item["title"])}</div>'
-                for k, item in enumerate(_oc)
+                for k, item in enumerate(content_agenda)
             ]
-            # 封顶提示行与 closing recap 同规则：数字索引 id，保证 GSAP
-            # stagger 循环能匹配到（见下方 -more 注释）
-            if len(content_agenda) > AGENDA_MAX:
-                chips.append(
-                    f'<div class="recap-chip recap-more" id="recapchip-{sid}-{len(_oc)}">'
-                    f'...等共 {len(content_agenda)} 条</div>'
-                )
             recap_count = len(chips)
             body_html = f'<div class="recap-chips" id="chiprow-{sid}">{"".join(chips)}</div>'
         elif sid == "opening" and content_agenda and seg.get("agenda", True):
             # 开场页原本只有标题+副标题、画面偏空——补一份"内容目录"目录，
             # 让观众提前知道接下来有哪几条内容。只在段落没有手写 body 时
             # 自动生成，不覆盖 manifest segments 里手动写的内容。
-            shown = content_agenda[:AGENDA_MAX]
+            shown = content_agenda
             n = len(shown)
-            # 动态字号：条目越多字号越小，避免 8 条时列表过长、底部挤进
+            # 动态字号：条目越多字号越小，避免条数多时列表过长、底部挤进
             # 字幕栏（目录被挤到字幕位置、太靠左）。字号随条目数从
             # shrinkThreshold 到 shrinkMax 线性缩小到 minFont；序号圆、行间距等比缩放。
             _ag_base = _al.get("fontSize", 46)
             _ag_min = _al.get("minFont", 32)
             _ag_th = _al.get("shrinkThreshold", 6)
-            # shrinkMax 不能超过 AGENDA_MAX（列表封顶 AGENDA_MAX 条，
-            # 模板值更大时收缩比例永远到不了 1、字号缩不到 minFont）
-            _ag_max = min(_al.get("shrinkMax", AGENDA_MAX), AGENDA_MAX)
+            # shrinkMax 是字号缩到 minFont 的条目数刻度；条数超过后由
+            # minFont 兜底不再继续缩（32px 是可读下限，再小序号圆里的
+            # 数字就糊了）
+            _ag_max = _al.get("shrinkMax", 8)
             if n <= _ag_th:
                 _ag_font = _ag_base
             else:
                 _ratio = (n - _ag_th) / max(1, (_ag_max - _ag_th))
                 _ag_font = max(_ag_min, round(_ag_base - (_ag_base - _ag_min) * _ratio))
-            # 序号圆等比缩放：比例跟随模板 numSize/fontSize（横屏 60/46、
-            # 竖屏 52/40 都 ≈1.30）——此前硬编码 1.3 让 numSize 成死字段
+            # 序号圆等比缩放：比例必须跟随模板 numSize/fontSize（横屏 60/46、
+            # 竖屏 52/40 都 ≈1.30）——硬编码比例会让 numSize 成死字段
             _ag_num = max(36, round(_ag_font * (_al["numSize"] / _al["fontSize"])))
-            _ag_gap = max(10, round(_ag_font * 0.75))  # 行间距等比缩放（≈0.75 行）
+            _ag_gap = max(10, round(_ag_font * 0.5))  # 行间距等比缩放（≈0.5 行）
             _ag_indent = _al.get("indentLeft", 140)    # 左缩进：把目录从屏幕左缘往右挪
-            _ag_mt = _al.get("marginTop", 56)          # 距标题上间距：往上挪给列表留空间
+            _ag_mt = _al.get("marginTop", 36)          # 距标题上间距：往上挪给列表留空间
             # 竖屏下方空间充裕，不再对任何条目做高度限制（之前的两行/单行
             # 强制槽位都去掉），让条目按内容自然撑开；当前 40px 下 8 条均
             # 单行，序号圆顶部对齐即可保证行列整齐。
@@ -727,17 +833,6 @@ def generate_html(manifest, audio_src, images=None,
                 f'</div>'
                 for k, item in enumerate(shown)
             ]
-            # "…等共 N 条"封顶行用数字索引 id（不是 -more 后缀）——动画
-            # 循环按数字索引起选择器，-more 永远匹配不到，GSAP 静默跳过，
-            # 导致该行从不隐藏、在其他条目 stagger 入场前先闪现
-            if len(content_agenda) > AGENDA_MAX:
-                items.append(
-                    f'<div class="agenda-item agenda-more" id="agendaitem-{sid}-{n}"'
-                    + (f' style="{_ag_slot_style}"' if _ag_slot_style else "")
-                    + f'><span class="agenda-title" style="font-size:{_ag_font}px;'
-                      f'line-height:{_ag_lh}">'
-                    f'...等共 {len(content_agenda)} 条</span></div>'
-                )
             agenda_count = len(items)
             body_html = (
                 f'<div class="agenda-list" id="agendalist-{sid}" '
@@ -748,24 +843,14 @@ def generate_html(manifest, audio_src, images=None,
             # 结尾页同理——用"回顾"标签条复述本期内容要点，帮观众加深印象，
             # 视觉上做成一排 chip 标签（而不是重复开场的竖排列表样式），
             # 跟开场页拉开视觉差异。flow 模式默认关闭（叙事型收尾靠
-            # closing 稿件本身，chips+"等共 N 条"的清单语言与叙事气质
+            # closing 稿件本身，chips 的清单语言与叙事气质
             # 不符）；manifest 写 "recap": true 可显式打开。注意与
             # opening 的区别：开场预告 flow 下也默认开，收尾回顾不跟着开。
-            shown = content_agenda[:AGENDA_MAX]
             chips = [
                 f'<div class="recap-chip" id="recapchip-{sid}-{k}" '
                 f'style="border-color:{item["accent"]}">{esc(item["title"])}</div>'
-                for k, item in enumerate(shown)
+                for k, item in enumerate(content_agenda)
             ]
-            # "…等共 N 条"封顶行用数字索引 id（不是 -more 后缀）——动画
-            # 循环按数字索引起选择器，-more 永远匹配不到，GSAP 静默跳过，
-            # 导致该行从不隐藏、在其他条目 stagger 入场前先闪现
-            if len(content_agenda) > AGENDA_MAX:
-                # 跟开场目录同款封顶提示：静默截断会让观众以为只有这 8 条
-                chips.append(
-                    f'<div class="recap-chip recap-more" id="recapchip-{sid}-{len(shown)}">'
-                    f'...等共 {len(content_agenda)} 条</div>'
-                )
             recap_count = len(chips)
             body_html = f'<div class="recap-chips" id="chiprow-{sid}">{"".join(chips)}</div>'
 
@@ -815,9 +900,8 @@ def generate_html(manifest, audio_src, images=None,
         #   淡出、窗口随播报滚动。正文信息由句子流逐句呈现，被替代段落
         #   的 body 卡不再渲染（见 _verse_kills_body）。
         # - bar：经典底部字幕条（sub-bar），正文卡正常显示。
-        _is_oc = sid.startswith("opening") or sid.startswith("closing")
-        # verse 替代 body 卡的段落：横屏内容段（verse 窗口进 title-wrap
-        # 占据正文卡位置）、竖屏有图段（大图+句子流已满高，body 卡放不下
+        # verse 替代 body 卡的段落：横屏内容段（verse 窗口占据正文卡
+        # 位置）、竖屏有图段（大图+句子流已满高，body 卡放不下
         # ——原来用 CSS display:none 兜，改 DOM 层不渲染，GSAP stagger
         # 不再指向不存在的行）。竖屏无图段与开场/收尾保留 body/agenda：
         # 无图段只有标题太单薄，agenda 是结构化目录不能换成句子流。
@@ -830,37 +914,63 @@ def generate_html(manifest, audio_src, images=None,
             body_line_count = 0
             agenda_count = 0
             recap_count = 0
-        # 横屏内容段的 verse 插进 title-wrap 文档流（正文卡位置，随标题
-        # 浮动）；竖屏所有段与横屏开场/收尾的 verse 留在 seg-card 尾部
-        # （竖屏 flex 钉底 / 横屏开场收尾 CSS 钉底）
+        # 横屏内容段的 verse 占据正文卡位置：有图段是独立绝对定位盒
+        # （与 body 卡同锚点/同宽推导，不进 title-wrap 文档流）；无图段
+        # 留在 title-wrap 流内居中（居中版式的组成部分）。竖屏所有段与
+        # 横屏开场/收尾的 verse 留在 seg-card 尾部（竖屏 flex 钉底 /
+        # 横屏开场收尾 CSS 钉底）
+        # body 卡同规则：横屏配图段独立于 title-wrap（标题框与内容框
+        # 各自锚定，互不约束——内容框位置不随标题折行浮动）。开场/收尾
+        # 与无图段的 agenda/body 是居中版式的组成部分，保留流内布局。
+        _body_detached = (aspect == "landscape" and has_image
+                          and bool(body_html))
         _verse_in_wrap = (sub_mode == "verse" and aspect == "landscape"
-                          and not _is_oc)
+                          and not _is_oc and not has_image)
+        _verse_detached = (sub_mode == "verse" and aspect == "landscape"
+                           and not _is_oc and has_image)
         verse_html = ""
         sub_bar_html = ""
         if sub_mode == "verse":
             _vlines = [
-                f'<div class="verse-line" data-i="{_s2.get("index", _k)}">'
+                # data-i 兜底与 cue 侧 si 保持一致（缺 index 都落 -1）：
+                # 两边兜底值不一致时，库调用传入无 index 句子会让 JS 高亮
+                # 永久失灵或错行——宁可都不高亮，也不错误高亮
+                f'<div class="verse-line" data-i="{_s2.get("index", -1)}">'
                 f'{esc(_s2["text"])}</div>'
                 for _k, _s2 in enumerate(seg["sentences"])
             ]
-            if _verse_in_wrap:
-                # 有图段 title-wrap 是全宽（标题横跨正文与图片上方，见
-                # title_width 计算），verse 不能 width:100% 继承——会滑到
-                # 右侧图片底下被遮（右缘须 920，与图片槽左缘 970 留 50px
-                # 间距）。显式钉左列正文卡宽度（模板 body.maxWidth）；
+            if _verse_detached:
+                # 有图段：独立左列盒子——position:absolute 锚定 body.top
+                # （与 bar 模式正文卡同一锚点，两种模式"内容框位置"视觉
+                # 连续），左缘对齐标题文字（left_px），宽度与 body 卡同
+                # 推导（图片左缘 − 50px 间距 − 左缘，与模板 maxWidth 取
+                # 小——width:100% 会继承 title-wrap 全宽、长句右半截滑到
+                # 图片底下被遮，layout 检查器以 text_occluded 暴露）。
+                _vwin_w = max(300, min(css_body_max or 870,
+                                       css_img_left_edge - left_px - 50))
+                _vstyle = (f'position:absolute;left:{left_px}px;'
+                           f'top:{css_body_top}px;width:{_vwin_w}px')
+                verse_html = (
+                    f'\n    <div class="verse" id="verse-{sid}" '
+                    f'style="{_vstyle}" '
+                    f'data-layout-allow-overflow data-layout-allow-overlap '
+                    f'data-layout-allow-occlusion>'
+                    f'<div class="verse-clip" data-accent="{ac}">'
+                    f'{"".join(_vlines)}</div></div>'
+                )
+            elif _verse_in_wrap:
                 # 无图段 title-wrap 全宽居中版式，verse 同宽居中（段落间
                 # 视觉宽度不跳变）。margin-top 与 bar 的正文卡同值
                 # （css_body_margin_top），保持"内容框位置"的视觉连续。
                 _vwin_w = css_body_max or 870
-                _vstyle = (f'width:{_vwin_w}px;margin-top:{css_body_margin_top}px'
-                           if has_image else
-                           f'width:{_vwin_w}px;margin:{css_body_margin_top}px auto 0')
+                _vstyle = (f'width:{_vwin_w}px;'
+                           f'margin:{css_body_margin_top}px auto 0')
                 verse_html = (
                     f'\n      <div class="verse" id="verse-{sid}" '
                     f'style="{_vstyle}" '
                     f'data-layout-allow-overflow data-layout-allow-overlap '
                     f'data-layout-allow-occlusion>'
-                    f'<div class="verse-clip">'
+                    f'<div class="verse-clip" data-accent="{ac}">'
                     f'{"".join(_vlines)}</div></div>'
                 )
             else:
@@ -876,7 +986,7 @@ def generate_html(manifest, audio_src, images=None,
                     f'\n    <div class="verse" id="verse-{sid}" '
                     f'data-layout-allow-overflow data-layout-allow-overlap '
                     f'data-layout-allow-occlusion>'
-                    f'<div class="verse-clip">'
+                    f'<div class="verse-clip" data-accent="{ac}">'
                     f'{"".join(_vlines)}</div></div>'
                 )
         else:
@@ -901,10 +1011,15 @@ def generate_html(manifest, audio_src, images=None,
             f'style="font-size:{title_size};text-shadow:0 0 40px {ac}40">'
             f'{esc(seg["title"])}</div>\n'
             f'      {tagline_html}\n'
-            f'      {body_html}\n'
+            f'      {body_html if not _body_detached else ""}\n'
             f'      {verse_html if _verse_in_wrap else ""}\n'
             f'    </div>'
             f'{image_html}\n'
+            # 横屏配图段的 body 卡是独立绝对定位盒（不进 title-wrap），
+            # 直接挂 seg-card——挂在 title-wrap 里会以它为定位参照系
+            # （title-wrap 自身 position:absolute，top:80），top 值会被
+            # 二次偏移。
+            f'    {body_html if _body_detached else ""}\n'
             f'    <div class="seg-progress" id="prog-{sid}" '
             f'style="background:{ac};width:0"></div>\n'
             f'    {verse_html if not _verse_in_wrap else ""}{sub_bar_html}\n'
@@ -949,11 +1064,21 @@ def generate_html(manifest, audio_src, images=None,
                 gsap_lines.append(
                     f'tl.set("#twipe",{{backgroundColor:"{ac}"}},{_wipe_at:.2f})'
                 )
-                gsap_lines.append(
-                    f'tl.fromTo("#twipe",{{x:0}},'
-                    f'{{x:"200%",duration:{a_wipe.get("duration", 0.4)},'
-                    f'ease:"{a_wipe.get("ease", "power2.inOut")}"}},{_wipe_at:.2f})'
-                )
+                # 方向按段落序号奇偶交替：连续同向擦除会产生机械感，
+                # 左右交替打破节奏（#twipe 静态位 left:-100%，两个方向
+                # 覆盖屏幕的行程对称）
+                if i % 2 == 0:
+                    gsap_lines.append(
+                        f'tl.fromTo("#twipe",{{x:0}},'
+                        f'{{x:"200%",duration:{a_wipe.get("duration", 0.4)},'
+                        f'ease:"{a_wipe.get("ease", "power2.inOut")}"}},{_wipe_at:.2f})'
+                    )
+                else:
+                    gsap_lines.append(
+                        f'tl.fromTo("#twipe",{{x:"200%"}},'
+                        f'{{x:0,duration:{a_wipe.get("duration", 0.4)},'
+                        f'ease:"{a_wipe.get("ease", "power2.inOut")}"}},{_wipe_at:.2f})'
+                    )
                 _fadein_dur = a_fadein.get("duration", 0.3)
                 gsap_lines.append(
                     f'tl.fromTo("#{sid}",{{opacity:0}},'
@@ -969,39 +1094,57 @@ def generate_html(manifest, audio_src, images=None,
         gsap_lines.append(
             f'tl.set("#{sid}",{{opacity:0}},{s + d + _fadeout_dur:.2f})'
         )
+        # 入场动效预算随段长归一化：短段整体压缩入场节奏（下限 0.45
+        # 避免快到看不清），长段维持原速。转场（wipe/fade）与进度条
+        # 不参与——前者承担段间衔接语义，后者必须与音频严格同步
+        _k = min(1.0, max(0.45, d / 4.0))
         # Accent side bar grows from top
         a_bar = a_.get("accentBar", {})
         gsap_lines.append(
             f'tl.from("#bar-{sid}",{{scaleY:0,transformOrigin:"top",'
-            f'duration:{a_bar.get("duration", 0.5)},'
+            f'duration:{a_bar.get("duration", 0.5) * _k:.2f},'
             f'ease:"{a_bar.get("ease", "power2.out")}"}},{s:.2f})'
         )
         # Background glow pulse
         a_glow = a_.get("glowPulse", {})
         gsap_lines.append(
             f'tl.fromTo("#glow-{sid}",{{opacity:0}},{{opacity:1,'
-            f'duration:{a_glow.get("duration", 0.8)}}},{s:.2f})'
+            f'duration:{a_glow.get("duration", 0.8) * _k:.2f}}},{s:.2f})'
         )
+        # glow 呼吸：淡入完成后极轻往复（只动 opacity，合成层友好），
+        # 消除长段落中后段的"死屏"感；有限 repeat 保证时间轴长度确定
+        a_gb = a_.get("glowBreath", {})
+        _gb_min = float(a_gb.get("min", 0.85))
+        if _gb_min < 1.0:
+            _period = float(a_gb.get("period", 1.6))
+            _g_fade = a_glow.get("duration", 0.8) * _k
+            _n = int(min(10, max(0, (d - _g_fade) / (_period * 2))))
+            if _n > 0:
+                gsap_lines.append(
+                    f'tl.to("#glow-{sid}",{{opacity:{_gb_min},'
+                    f'duration:{_period:.2f},ease:"sine.inOut",yoyo:true,repeat:{_n}}},'
+                    f'{s + _g_fade:.2f})'
+                )
         # Title entrance
         a_title = a_.get("titleEntrance", {})
         gsap_lines.append(
             f'tl.from("#title-{sid}",{{scale:{a_title.get("from", 0.5)},'
-            f'duration:{a_title.get("duration", 0.5)},'
+            f'duration:{a_title.get("duration", 0.5) * _k:.2f},'
             f'ease:"{a_title.get("ease", "back.out(1.7)")}"}},{s:.2f})'
         )
         if badge:
             a_badge = a_.get("badgeEntrance", {})
             gsap_lines.append(
                 f'tl.from("#badge-{sid}",{{scale:{a_badge.get("from", 0)},'
-                f'duration:{a_badge.get("duration", 0.4)},'
+                f'duration:{a_badge.get("duration", 0.4) * _k:.2f},'
                 f'ease:"{a_badge.get("ease", "back.out(2)")}"}},{s:.2f})'
             )
         if seg.get("tagline"):
             a_tag = a_.get("taglineEntrance", {})
             gsap_lines.append(
                 f'tl.from("#tag-{sid}",{{opacity:0,y:{a_tag.get("y", 20)},'
-                f'duration:{a_tag.get("duration", 0.5)}}},'
-                f'{s + a_tag.get("delay", 0.3):.2f})'
+                f'duration:{a_tag.get("duration", 0.5) * _k:.2f}}},'
+                f'{s + a_tag.get("delay", 0.3) * _k:.2f})'
             )
         # Body line stagger — each line slides in with incremental delay
         if body_line_count > 0:
@@ -1010,9 +1153,20 @@ def generate_html(manifest, audio_src, images=None,
                 gsap_lines.append(
                     f'tl.from("#bodyline-{sid}-{j}",{{opacity:0,'
                     f'x:{a_body.get("x", -20)},'
-                    f'duration:{a_body.get("duration", 0.4)}}},'
-                    f'{s + a_body.get("startDelay", 0.6) + j * a_body.get("delay", 0.15):.2f})'
+                    f'duration:{a_body.get("duration", 0.4) * _k:.2f}}},'
+                    f'{s + a_body.get("startDelay", 0.6) * _k + j * a_body.get("delay", 0.15) * _k:.2f})'
                 )
+                # 数字 pop：行内数字在行入场完成后轻微放大回落一次，
+                # 强调数据类段落的核心信息；transform 不触发重排
+                if f"{sid}-{j}" in numpop_ids:
+                    a_np = a_.get("numPop", {})
+                    gsap_lines.append(
+                        f'tl.fromTo("#bodyline-{sid}-{j} .num-accent",{{scale:1}},'
+                        f'{{scale:{a_np.get("scale", 1.12)},'
+                        f'duration:{a_np.get("duration", 0.18):.2f},'
+                        f'ease:"power2.out",yoyo:true,repeat:1}},'
+                        f'{s + a_body.get("startDelay", 0.6) * _k + j * a_body.get("delay", 0.15) * _k + a_body.get("duration", 0.4) * _k:.2f})'
+                    )
         # 开场"内容目录"：每条从左侧滑入，逐条错峰
         if agenda_count > 0:
             a_agenda = a_.get("agendaStagger", {})
@@ -1020,9 +1174,9 @@ def generate_html(manifest, audio_src, images=None,
                 gsap_lines.append(
                     f'tl.from("#agendaitem-{sid}-{j}",{{opacity:0,'
                     f'x:{a_agenda.get("x", -30)},'
-                    f'duration:{a_agenda.get("duration", 0.4)},'
+                    f'duration:{a_agenda.get("duration", 0.4) * _k:.2f},'
                     f'ease:"{a_agenda.get("ease", "power2.out")}"}},'
-                    f'{s + a_agenda.get("startDelay", 0.6) + j * a_agenda.get("delay", 0.12):.2f})'
+                    f'{s + a_agenda.get("startDelay", 0.6) * _k + j * a_agenda.get("delay", 0.12) * _k:.2f})'
                 )
         # 结尾"回顾"标签条：每个 chip 弹入，逐条错峰
         if recap_count > 0:
@@ -1031,9 +1185,9 @@ def generate_html(manifest, audio_src, images=None,
                 gsap_lines.append(
                     f'tl.from("#recapchip-{sid}-{j}",{{opacity:0,'
                     f'scale:{a_chip.get("scaleFrom", 0.8)},'
-                    f'duration:{a_chip.get("duration", 0.35)},'
+                    f'duration:{a_chip.get("duration", 0.35) * _k:.2f},'
                     f'ease:"{a_chip.get("ease", "back.out(1.8)")}"}},'
-                    f'{s + a_chip.get("startDelay", 0.6) + j * a_chip.get("delay", 0.1):.2f})'
+                    f'{s + a_chip.get("startDelay", 0.6) * _k + j * a_chip.get("delay", 0.1) * _k:.2f})'
                 )
         if has_image:
             a_img = a_.get("imageEntrance", {})
@@ -1045,10 +1199,26 @@ def generate_html(manifest, audio_src, images=None,
             gsap_lines.append(
                 f'tl.from("#img-{sid}",{{opacity:0,'
                 f'{_img_ent},'
-                f'duration:{a_img.get("duration", 0.8)},'
+                f'duration:{a_img.get("duration", 0.8) * _k:.2f},'
                 f'ease:"{a_img.get("ease", "power2.out")}"}},'
-                f'{s + a_img.get("startDelay", 0.2):.2f})'
+                f'{s + a_img.get("startDelay", 0.2) * _k:.2f})'
             )
+            # Ken Burns 缓推：整槽极缓放大到 kenBurns.scale，消除长段
+            # 静态图的死屏感。缩放整个图片槽而非内层 img——槽自带圆角
+            # 与光晕，整体缩放无溢出裁切问题；origin 按 sid 序号在四角
+            # 轮换避免每段同向推近的机械感；ease none 匀速，渲染确定性
+            # 不受影响。短段（≤4s）不值得推，直接跳过
+            a_kb = a_.get("kenBurns", {})
+            _kb_scale = float(a_kb.get("scale", 1.05))
+            if _kb_scale > 1.001 and d > 4.0:
+                _kb_origins = ("30% 30%", "70% 30%", "30% 70%", "70% 70%")
+                _kb_o = _kb_origins[int(re.sub(r"\D", "", sid) or "0") % len(_kb_origins)]
+                gsap_lines.append(
+                    f'tl.fromTo("#img-{sid}",'
+                    f'{{scale:1,transformOrigin:"{_kb_o}"}},'
+                    f'{{scale:{_kb_scale},duration:{d - a_img.get("startDelay", 0.2) * _k:.2f},'
+                    f'ease:"none"}},{s + a_img.get("startDelay", 0.2) * _k:.2f})'
+                )
         gsap_lines.append(
             f'tl.to("#prog-{sid}",{{width:"100%",duration:{d:.2f},ease:"none"}},{s:.2f})'
         )
@@ -1082,16 +1252,14 @@ def generate_html(manifest, audio_src, images=None,
     # ≈28 字；宽容度 1.5（最长行 ~42 字），超长靠多切几行兜底。verse 模式
     # 下切分粒度不影响视觉（同一句的多条 cue 携带相同 si，verseUpdate 幂等），
     # bar 模式下每行直接渲染进字幕条。
-    _sub_cap = 22 if aspect == "vertical" else 28
-    _sub_slack = 1.0 if aspect == "vertical" else 1.5
-    # 物理行硬上限：次要标点切不动时按此字符级硬切，保证每行 <= 物理行宽
-    # （横屏 ~34 字/行、竖屏 ~22 字/行），1 逻辑行 = 1 物理行，不二次换行。
-    _sub_hard = 22 if aspect == "vertical" else 34
+    # 切分参数来自 _script_utils.subtitle_params_for（与 export_extras.py
+    # 导出的 SRT 共用同一份，保证片内字幕与外挂字幕逐条对齐）。
+    _sub_p = subtitle_params_for(aspect, sub_mode)
+    _sub_cap = _sub_p["max_chars"]
+    _sub_slack = _sub_p["slack"]
+    _sub_hard = _sub_p["hard_cap"]
+    _sub_cue_lines = _sub_p["cue_max_lines"]
     for sent in sentences:
-        # 每屏行数上限：bar 模式字幕条每 cue ≤2 行（不盖正文卡）；verse
-        # 模式竖屏按整句渲染（内容=字幕，切行只影响 cue 数据不影响视觉）
-        _sub_cue_lines = ((99 if aspect == "vertical" else 2)
-                          if sub_mode == "verse" else 2)
         groups = split_subtitle_cues(sent["text"], max_chars=_sub_cap,
                                      slack=_sub_slack,
                                      hard_cap=_sub_hard,
@@ -1136,7 +1304,7 @@ def generate_html(manifest, audio_src, images=None,
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width={width},height={height}">
-<script src="{gsap_src}"></script>
+<script src="{gsap_src_attr}"></script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{width:{width}px;height:{height}px;overflow:hidden;background:{theme_colors["bg_gradient"]}}}
@@ -1154,23 +1322,22 @@ body{{font-family:{css_font_family}}}
 .badge{{position:absolute;top:{css_badge_top};left:{css_badge_left};width:{css_badge_size}px;height:{css_badge_size}px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:{css_badge_font};font-weight:{css_badge_weight};color:{theme_colors["text_color"]};z-index:5}}
 .seg-title-wrap{{position:absolute;right:0;padding:{css_title_pad}}}
 .seg-title{{font-weight:{css_title_weight};color:{theme_colors["text_color"]};line-height:{css_title_lh};word-break:break-word}}
-.tagline{{font-size:{css_tagline_font};margin-top:{css_tagline_mt}px;font-weight:{css_tagline_weight}}}
+.tagline{{font-size:{css_tagline_font};margin-top:{css_tagline_mt}px;line-height:{css_tagline_lh};font-weight:{css_tagline_weight}}}
 .body-text{{margin-top:{css_body_margin_top}px;padding:{css_body_pad};background:{theme_colors["body_bg"]};border-radius:{css_body_radius}px;border-left:{css_body_border_left}px solid {theme_colors["soft_border"]};backdrop-filter:blur(4px)}}
 .body-line{{font-size:{css_body_font};color:{theme_colors["body_text"]};line-height:{css_body_lh};font-weight:{css_body_weight}}}
 .body-line+.body-line{{margin-top:{css_body_gap}px}}
+.num-accent{{display:inline-block;font-weight:700}}
 .agenda-list{{display:flex;flex-direction:column;gap:{css_agenda_gap}px;margin-top:{css_agenda_margin};align-items:flex-start;text-align:left}}
 .agenda-item{{display:flex;align-items:flex-start;gap:14px}}
 .agenda-num{{flex-shrink:0;width:{css_agenda_num};height:{css_agenda_num};border-radius:50%;
   display:flex;align-items:center;justify-content:center;font-weight:800;
   font-size:calc({css_agenda_num} * 0.5);color:{AGENDA_NUM_TEXT_COLOR}}}
 .agenda-title{{font-size:{css_agenda_font};font-weight:600;color:{theme_colors["body_text"]}}}
-.agenda-more .agenda-title{{opacity:0.6;font-weight:400}}
 .recap-chips{{display:flex;flex-wrap:wrap;gap:16px;margin-top:{css_chip_margin};justify-content:center;
   max-width:100%}}
 .recap-chip{{padding:{css_chip_pad};border-radius:999px;border:2px solid;
   font-size:{css_chip_font};font-weight:600;color:{theme_colors["body_text"]};
   background:rgba(255,255,255,0.04)}}
-.recap-chip.recap-more{{opacity:0.6;font-weight:400;border-style:dashed}}
 .seg-progress{{position:absolute;bottom:0;left:0;height:{css_prog_height}px}}
 #twipe{{position:absolute;top:0;left:-100%;width:100%;height:100%;z-index:50;pointer-events:none;will-change:transform}}
 .seg-image{{position:absolute;top:{css_img_top};{css_img_pos};width:{css_img_width}px;height:{css_img_height}px;border-radius:{css_img_radius}px;overflow:hidden;background:{theme_colors["body_bg"]}}}
@@ -1253,7 +1420,7 @@ const tl = gsap.timeline({{paused:true}});
       let c = verseCache.get(v);
       if (!c) {{
         const clip = v.querySelector(".verse-clip");
-        c = {{clip: clip, winH: v.clientHeight, clipH: clip.scrollHeight, lines: []}};
+        c = {{clip: clip, accent: clip.getAttribute("data-accent") || "", winH: v.clientHeight, clipH: clip.scrollHeight, lines: []}};
         for (const ln of v.querySelectorAll(".verse-line")) {{
           c.lines.push({{el: ln, top: ln.offsetTop}});
         }}
@@ -1266,6 +1433,9 @@ const tl = gsap.timeline({{paused:true}});
       for (const L of c.lines) {{
         const di = parseInt(L.el.getAttribute("data-i"), 10);
         L.el.classList.toggle("active", L === act);
+        // 当前句用段落 accent 着色（字重恒定，避免 500/700 切换时
+        // 字形宽度跳变）；非活动行恢复主题色，transition 平滑过渡
+        L.el.style.color = (L === act && c.accent) ? c.accent : "";
         // past 只在同一 verse（同段落）内比较，跨段句序无先后语义
         L.el.classList.toggle("past", !!act && di < si);
       }}
@@ -1304,7 +1474,7 @@ def _uncovered_content_sids(manifest, images):
     把缺图当正常（run.py 一键编排有缺图拦截，分步执行没有）。
     """
     return [seg.get("id", "") for seg in manifest.get("segments", [])
-            if (seg.get("id") or "").startswith(("news", "seg"))
+            if is_content_sid(seg.get("id"))
             and seg.get("id", "") not in images]
 
 
@@ -1422,6 +1592,7 @@ def validate_images_files(images, out_dir, seg_durs=None):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="Generate Hyperframes composition from timing manifest"
     )
@@ -1606,8 +1777,7 @@ def main():
                     audio_dir = os.path.join(out_dir, "audio")
                     os.makedirs(audio_dir, exist_ok=True)
                     dst = os.path.join(audio_dir, os.path.basename(audio_abs))
-                    if (not os.path.exists(dst)
-                            or os.path.getsize(dst) != os.path.getsize(audio_abs)):
+                    if not _file_identical(audio_abs, dst):
                         import shutil
                         shutil.copy2(audio_abs, dst)
                     print(f"[audio] 音频在项目根之外，已自动拷贝到 {dst}",
@@ -1632,8 +1802,14 @@ def main():
                              v_compact=(aspect == "portrait"))
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # 原子写：index.html 是渲染输入，写到一半被打断会留下半份 HTML——
+        # check/render 会报莫名其妙的语法错，而不是"上次生成中断了，重跑"。
+        _tmp_html = output_path + ".tmp"
+        with open(_tmp_html, 'w', encoding='utf-8') as f:
             f.write(html)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(_tmp_html, output_path)
 
         # 复制预览脚本到 HTML 输出目录（index.html 引用同目录 preview.js）
         preview_js = os.path.join(os.path.dirname(os.path.abspath(__file__)),

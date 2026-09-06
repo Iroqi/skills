@@ -44,16 +44,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _env import load_env, get_key, env_source_info, resolve_model_config  # noqa: E402
 from _theme import get_default_accent  # noqa: E402
 from _voices import list_voice_ids  # noqa: E402
-# 默认倍速/时长估算单一来源（曾散在 budget.py，核心管线反向依赖可选
-# 工具，2026-08-18 收口到 _contracts）
+# 默认倍速/时长估算的单一来源在 _contracts——budget.py 属可选工具，
+# 核心管线不反向依赖可选脚本，常量统一从 _contracts 取
 from _contracts import (DEFAULT_SPEED, load_segments_source,  # noqa: E402
-                        DEFAULT_CHARS_PER_SEC, estimate_sentence_seconds)
+                        DEFAULT_CHARS_PER_SEC, estimate_sentence_seconds,
+                        is_content_sid)
 from _ffmpeg import get_ffmpeg  # noqa: E402
-from _audio import (measure_duration, generate_silence, build_atempo_filter,  # noqa: E402
+from _audio import (measure_duration, generate_silence,  # noqa: E402
                     apply_speed, concat_audio, mix_bgm, validate_speed,
                     apply_loudnorm)
 from _tts import synth_sentence  # noqa: E402
 from build_from_structured import build_parts  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 DEFAULT_ACCENT = get_default_accent()
 
@@ -128,7 +130,7 @@ def run_env_check():
     # 3. ffmpeg lavfi support (for generate_silence)
     print(f"\n[3/{TOTAL_CHECKS}] ffmpeg lavfi support (silent audio generation):", flush=True)
     if ff is None:
-        status(False, "ffmpeg 未解析成功（见 [2/6]），跳过 lavfi 检查")
+        status(False, f"ffmpeg 未解析成功（见 [2/{TOTAL_CHECKS}]），跳过 lavfi 检查")
     else:
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
@@ -157,7 +159,7 @@ def run_env_check():
     # 4. ffmpeg WAV demuxer (critical — needed by measure_duration + atempo)
     print(f"\n[4/{TOTAL_CHECKS}] ffmpeg WAV demuxer (critical for TTS output processing):", flush=True)
     if ff is None:
-        status(False, "ffmpeg 未解析成功（见 [2/6]），跳过 WAV demuxer 检查")
+        status(False, f"ffmpeg 未解析成功（见 [2/{TOTAL_CHECKS}]），跳过 WAV demuxer 检查")
     else:
         try:
             import wave as _wave
@@ -273,6 +275,7 @@ def run_env_check():
 # ===================================================================
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="content-to-video TTS Pipeline")
     # 不用 required=True：--check-env 需要独立运行（文档承诺），必填项
     # 放到 check-env 早退之后再校验
@@ -414,6 +417,12 @@ def main():
         return
 
     # ── Setup output ───────────────────────────────────────────────
+    # -o 指到已存在的同名文件（手滑把文件路径当目录传）时，makedirs 会
+    # 裸抛 FileExistsError 不指向真正原因——提前拦下
+    if os.path.isfile(args.output):
+        print(f"[error] 输出路径 {args.output} 是一个已存在的文件，"
+              f"--output 需要的是目录路径", file=sys.stderr)
+        sys.exit(1)
     os.makedirs(args.output, exist_ok=True)
     sentences_dir = os.path.join(args.output, "sentences")
     os.makedirs(sentences_dir, exist_ok=True)
@@ -422,7 +431,10 @@ def main():
 
     # ── Initialize OpenAI client ───────────────────────────────────
     from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    # max_retries=0：SDK 内部默认还会静默重试 2 次，叠加本模块自己的
+    # 3 次应用层重试 = 单句最多 6 次 billable 请求。重试策略统一收口到
+    # _tts.synth_sentence（带退避抖动），SDK 层关掉。
+    client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
     print(f"[api] model={model} base_url={base_url}", flush=True)
 
     # ── Build per-sentence speed / voice mapping ────────────────────
@@ -548,7 +560,8 @@ def main():
             sha_path = out_path + ".sha"
             if os.path.exists(sha_path):
                 try:
-                    cached_sha = open(sha_path, encoding="utf-8").read().strip()
+                    with open(sha_path, encoding="utf-8") as f:
+                        cached_sha = f.read().strip()
                 except (OSError, UnicodeDecodeError):
                     # sidecar 被写成非 UTF-8（手工编辑过）与读不到同罪：
                     # 按指纹失配处理，触发缓存清理与重合成
@@ -584,9 +597,9 @@ def main():
                 applied = None
                 if os.path.exists(marker):
                     try:
-                        applied = float(
-                        open(marker, encoding="utf-8").read().strip())
-                    except Exception:
+                        with open(marker, encoding="utf-8") as f:
+                            applied = float(f.read().strip())
+                    except (OSError, ValueError):
                         applied = None
                 # Re-apply speed if the cached audio's applied speed differs
                 # from the requested speed. This covers two cases:
@@ -609,8 +622,16 @@ def main():
                         # ±0.01 阈值与 build_atempo_filter 一致：1.0±ε 视作
                         # 原速（atempo 不施变速），marker 不得宣称已变速
                         if abs(sent_speed - 1.0) > 0.01:
-                            open(marker, 'w', encoding="utf-8").write(
-                                str(round(sent_speed, 4)))
+                            try:
+                                with open(marker, 'w', encoding="utf-8") as f:
+                                    f.write(str(round(sent_speed, 4)))
+                            except OSError as e:
+                                # marker 写失败（文件被占用）时绝不能中断
+                                # resume：音频本身已变速成功，只是下次
+                                # resume 会多做一次补偿变速（幂等）
+                                print(f"  [{label}][warn] .spd marker 写入"
+                                      f"失败（{e}），下次 --resume 会重新"
+                                      f"对齐语速", file=sys.stderr)
                         elif os.path.exists(marker):
                             try:
                                 os.remove(marker)
@@ -793,6 +814,13 @@ def main():
         sys.exit(1)
 
     total_dur = measure_duration(ffmpeg_path, combined_path)
+    if not total_dur or total_dur <= 0:
+        # 测量失败时 total_dur=0 仍能通过契约的数值校验，产出"合法但废掉"
+        # 的 manifest（data-duration=0 的 composition 渲染出无声空片）——
+        # 在这里拦下比让废品流到渲染端好
+        print("[error] combined.wav 时长测量失败（0.0s）——ffmpeg 无法读取"
+              "拼接产物？检查磁盘空间与 ffmpeg 可用性", file=sys.stderr)
+        sys.exit(1)
     print(f"[done] Total audio: {total_dur:.2f}s", flush=True)
 
     # ── Calculate start times ──────────────────────────────────────
@@ -868,6 +896,7 @@ def main():
     # ── Optional segment grouping (seg_config loaded earlier) ─────
     if seg_config:
         grouped = []
+        dropped = []
         for seg in seg_config:
             start_idx = seg["start"]   # 0-based sentence index (inclusive)
             end_idx = seg["end"]       # exclusive
@@ -875,13 +904,21 @@ def main():
                 s for s in manifest_sentences
                 if start_idx <= s["index"] < end_idx
             ]
+            _seg_id = seg.get("id", f"seg{len(grouped)+1}")
+            if not seg_sentences:
+                # 该段所有句子都没产出音频（TTS 连续失败 + --on-fail skip，
+                # 或段落本身被上游丢空）。空段落进 manifest 会被 _contracts
+                # 的校验直接拒收（"缺少非空 sentences 列表"），
+                # gen_hyperframes 随之退出——一次失败就让整条视频出不来。
+                # 剔除并报对人，而不是写出一份下游必然拒收的 manifest。
+                dropped.append(_seg_id)
+                continue
             # tagline 兜底：只对 news/seg 内容段落兜底为 "补充阅读"，避免画面
             # 缺字；opening/closing 是结构性段落，留空即不显示小标题，不塞
             # 通用标签。兜底文案必须是内容中立词（本技能信源不限于 AI 资讯），
             # 与 SKILL.md 字段说明保持一致。
-            _seg_id = seg.get("id", f"seg{len(grouped)+1}")
             _tagline = seg.get("tagline", "")
-            if not _tagline and _seg_id.startswith(("news", "seg")):
+            if not _tagline and is_content_sid(_seg_id):
                 _tagline = "补充阅读"
             seg_out = {
                 "id": _seg_id,
@@ -906,11 +943,28 @@ def main():
                 seg_out["turns"] = seg["turns"]
             grouped.append(seg_out)
         manifest["segments"] = grouped
+        if dropped:
+            # 静默剔除会让"我写了 8 段、成片只有 6 段"变成无解的困惑；
+            # 报出被剔除的 sid 与原因，让失败可归因。
+            print(f"\n[warn] {len(dropped)} 个段落没有任何可用音频，"
+                  f"已从 manifest 剔除：{', '.join(dropped)}\n"
+                  f"       常见原因是这几段 TTS 连续失败且 --on-fail skip"
+                  f"（默认）——检查一下上面这些句子的 [fail] 日志，修掉后"
+                  f"重跑即可自动补回；--on-fail silence 会生成静音占位、"
+                  f"不会触发剔除。", file=sys.stderr, flush=True)
 
     # ── Write manifest ─────────────────────────────────────────────
+    # 原子写：timing_manifest.json 是下游（gen_hyperframes / export_extras /
+    # verify_render）唯一的时间轴数据源，写到一半被 Ctrl-C 打断会留下一份
+    # 截断的 JSON——下次 --resume 直接崩在 json.load，且堆栈完全不指向
+    # "上次中断了，重跑一遍就好"。先写 .tmp 再 replace，要么完整要么不存在。
     manifest_path = os.path.join(args.output, "timing_manifest.json")
-    with open(manifest_path, 'w', encoding='utf-8') as f:
+    _tmp = manifest_path + ".tmp"
+    with open(_tmp, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(_tmp, manifest_path)
 
     print(f"\n[manifest] {manifest_path}", flush=True)
     print(f"[stats] {len(sentence_data)}/{len(sentences)} sentences OK "

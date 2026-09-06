@@ -7,11 +7,37 @@
 """
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _audio import validate_speed  # noqa: E402
 from _voices import is_valid_voice_id, list_voice_ids  # noqa: E402
+
+# 段落 id 的合法形态：字母开头，只含字母/数字/下划线/连字符。id 会被
+# gen_hyperframes 直接拼进 HTML 的 id=/class= 属性和 GSAP 选择器字符串
+# （tl.fromTo("#{sid}",...)）——手写 manifest 里带引号/点号/方括号的 sid
+# 轻则选择器匹配失败动画静默丢失，重则内联 <script> 整段 SyntaxError、
+# 字幕同步与时间轴注册全部死亡且无报错。在契约层收口校验。
+_SID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+# accent 写成 hex（# 开头）时必须是 3 或 6 位：手滑的 #12345 会让
+# gen_hyperframes 里所有 `{accent}40` alpha 后缀声明成为非法 CSS 被浏览器
+# 整条丢弃——glow/shadow 静默消失、不报任何错，只在成品画面上才看得出来。
+_ACCENT_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+# ── 内容段落 id 约定（单一来源）──────────────────────────────────
+# "哪些段落需要配图" 由 sid 前缀决定：opening/closing 是结构性段落，天生
+# 不需要配图。这个约定此前散落在 5 处、3 种写法（startswith(元组) 式、
+# 两个 or 串联式、还有注释里复述一遍），改命名规则要动 5 个地方且极易
+# 漏掉一处——漏的那处会静默改变配图覆盖率统计口径（把不该算的算进去，
+# 或该配图的段落被跳过拦截）。收口在这里。
+CONTENT_SID_PREFIXES = ("news", "seg")
+
+
+def is_content_sid(sid):
+    """该 sid 是否属于"需要配图的内容段落"（排除 opening/closing）。"""
+    return (sid or "").startswith(CONTENT_SID_PREFIXES)
+
 
 # ── 跨脚本默认值（单一来源）────────────────────────────────────────
 # 历史上 --speed 默认值在 pipeline(1.5)/budget(1.0)/split_series(1.0)
@@ -38,6 +64,41 @@ DEFAULT_GAP = 0.4
 def estimate_sentence_seconds(sentence, chars_per_sec, speed):
     """单句预计时长（秒）：字数 / 语速 / 倍速。"""
     return len(sentence) / chars_per_sec / max(speed, 0.01)
+
+
+def _validate_accent(value, where):
+    """accent 取值校验（可选字段）：# 开头必须是合法 3/6 位 hex。
+
+    非 # 开头的值（CSS 颜色名如 red）原样放行——基础色仍可用，只有
+    alpha 后缀声明会降级；hex 写错则连基础色一起静默失效，必须在
+    进管线前报对人。
+    """
+    if value is None:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where} 的 'accent' 必须是非空字符串"
+                         f"（如 #64b5f6），实际: {value!r}")
+    v = value.strip()
+    if v.startswith("#") and not _ACCENT_HEX_RE.match(v):
+        raise ValueError(
+            f"{where} 的 accent={value!r} 不是合法 hex 颜色"
+            f"（应为 #rgb 或 #rrggbb，如 #64b5f6）")
+
+
+def _validate_sid(sid, where, seen):
+    """段落 id 校验：合法字符集 + 跨段唯一。sid 缺失时跳过（手写最小
+    manifest 的容错路径由 gen_hyperframes 兜底负责）。"""
+    if sid is None or sid == "":
+        return
+    if not isinstance(sid, str) or not _SID_RE.match(sid):
+        raise ValueError(
+            f"{where} 的 id={sid!r} 含非法字符或格式不对——id 只允许"
+            f"字母开头，字母/数字/下划线/连字符（如 seg1、opening），"
+            f"因为它会被拼进 HTML 属性与 GSAP 选择器")
+    if sid in seen:
+        raise ValueError(f"{where} 的 id={sid!r} 与前面的段落重复"
+                         f"（选择器会互相串台）")
+    seen.add(sid)
 
 
 def validate_segments_source(data):
@@ -102,6 +163,8 @@ def validate_segments_source(data):
                 f"segments[{i}]（title={seg.get('title')!r}）的 voice_id="
                 f"{seg['voice_id']!r} 不在预置音色里"
                 f"（可用：{', '.join(list_voice_ids())}）")
+        _validate_accent(seg.get("accent"),
+                         f"segments[{i}]（title={seg.get('title')!r}）")
         dialogue = seg.get("dialogue")
         # 类型必须在这里拦下：非列表的 truthy dialogue（字符串/对象）若放行，
         # 会绕过 has_dialogue 判定、又在 build_from_structured 的 if dialogue:
@@ -187,9 +250,15 @@ def validate_timing_manifest(data):
     if segs is not None:
         if not isinstance(segs, list):
             raise ValueError("timing_manifest.json 的 'segments' 必须是列表")
+        _seen_sids = set()
         for i, sg in enumerate(segs):
             if not isinstance(sg, dict):
                 raise ValueError(f"segments[{i}] 必须是对象")
+            # id 会拼进 HTML 属性与 GSAP 选择器字符串（见 _SID_RE 注释），
+            # 手写 manifest 里坏 sid 的失败模式是"动画静默丢失/整段脚本
+            # 语法错误"，必须在契约层报对人
+            _validate_sid(sg.get("id"), f"segments[{i}]", _seen_sids)
+            _validate_accent(sg.get("accent"), f"segments[{i}]（{sg.get('id', '?')}）")
             ss = sg.get("sentences")
             if not isinstance(ss, list) or not ss:
                 sid = sg.get("id", f"segments[{i}]")

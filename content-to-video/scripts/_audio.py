@@ -8,21 +8,46 @@ import math
 import os
 import subprocess
 import sys
+import wave
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _ffmpeg import parse_duration  # noqa: E402
 
 
-def measure_duration(ffmpeg_path, audio_path):
-    """Measure audio duration using ffmpeg -i (ffprobe not available in imageio-ffmpeg).
+def _wav_duration(audio_path):
+    """WAV 样本精确时长（秒）：帧数 / 帧率。零子进程、无量化误差。
 
-    Uses a regex to parse the `Duration: HH:MM:SS.xx` line from stderr, which
-    is more robust than string-splitting against locale / format variations.
+    ffmpeg 打印的 `Duration:` 固定两位小数（10ms 量化），pipeline 把每句
+    量化值累加进 manifest 的 start_time 时误差随机游走，长稿（200 句）可
+    漂移数十 ms 到近秒级——字幕/动效同步精度直接受损。所有中间产物都是
+    WAV，标准库 wave 读帧数即可精确到样本。非 WAV 或解析失败返回 None
+    （调用方回退 ffmpeg -i 路径）。
+    """
+    try:
+        with wave.open(audio_path, "rb") as w:
+            frames = w.getnframes()
+            rate = w.getframerate()
+            if frames > 0 and rate > 0:
+                return frames / float(rate)
+    except Exception:
+        pass
+    return None
+
+
+def measure_duration(ffmpeg_path, audio_path):
+    """Measure audio duration (ffprobe not available in imageio-ffmpeg).
+
+    WAV 优先走样本精确路径（_wav_duration，帧数/帧率）；非 WAV 或 wave
+    解析失败才回退 `ffmpeg -i` 的 stderr 正则解析（`Duration: HH:MM:SS.xx`
+    行比字符串切分对 locale/格式变化更稳健）。
     Returns 0.0 if parsing fails (callers should treat 0.0 as invalid).
 
     显式捕获 subprocess.TimeoutExpired —— 原裸 `except Exception` 虽也能接住，
     但 30s 超时通常意味着 ffmpeg 卡死（罕见但可能），单独记日志便于诊断。
     """
+    wav_dur = _wav_duration(audio_path)
+    if wav_dur is not None:
+        return wav_dur
     try:
         result = subprocess.run(
             [ffmpeg_path, "-i", audio_path],

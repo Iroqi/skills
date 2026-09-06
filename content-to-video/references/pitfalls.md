@@ -145,7 +145,7 @@ tl.fromTo("#twipe",{x:0},{x:"200%",duration:0.4,ease:"power2.inOut"},start-0.2);
 
 **问题**：v4.0 从"文本标记 + 正则解析"切到结构化路径时，正文摘要的行为在迁移时被漏掉——`body` 被无条件写死成 `""`，导致除非用户自己在 `segments_source.json` 里手写 `body` 字段，否则整条视频每个内容段落画面上只有一个大标题，没有任何正文内容，观感"干巴巴"。因为 `gen_hyperframes.py` 对"`body` 为空就不渲染摘要区块"的处理是正常设计（`opening`/`closing` 故意留空好触发自动目录/回顾），所以这个问题**不会报任何错**，只有实际看渲染出来的视频才会发现内容"消失了"。
 
-**解决**：`build_from_structured.py` 现在会在 `seg["body"]` 未显式提供（或为空字符串）时自动兜底——整段句子按视觉行预算（约 8 行、每行约 20 字）逐行放入、放不下时截断；显式传了非空 `body`，仍然优先用手写内容，不会被兜底覆盖。兜底规则的完整说明以 SKILL.md 第 2 步 `body` 字段说明为家，此处不重复。`opening`/`closing` 段落**保持不变**（`body` 仍留空），因为这两段依赖 `body` 为空才会触发"本期看点"/"回顾"自动目录（见 SKILL.md 第 2 步 `opening_body`/`closing_body` 字段说明）。
+**解决**：`build_from_structured.py` 现在会在 `seg["body"]` 未显式提供（或为空字符串）时自动兜底——整段句子按视觉行预算（约 7 行、每行约 20 字）逐行放入、放不下时截断；显式传了非空 `body`，仍然优先用手写内容，不会被兜底覆盖。兜底规则的完整说明以 SKILL.md 第 2 步 `body` 字段说明为家，此处不重复。`opening`/`closing` 段落**保持不变**（`body` 仍留空），因为这两段依赖 `body` 为空才会触发"本期看点"/"回顾"自动目录（见 SKILL.md 第 2 步 `opening_body`/`closing_body` 字段说明）。
 
 ### 16. `npx hyperframes render` 文件已经写完但进程不退出，导致 agent 卡住
 

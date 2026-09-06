@@ -26,7 +26,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _script_utils import split_sentences  # noqa: E402
+from _script_utils import split_sentences, setup_stdio  # noqa: E402
 from _contracts import (load_segments_source,  # noqa: E402
                         DEFAULT_SPEED, OPENING_CLOSING_DEFAULT_SPEED,
                         DEFAULT_CHARS_PER_SEC, DEFAULT_GAP,
@@ -118,6 +118,7 @@ def cmd_estimate(args):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="视频时长预算：写稿前规划 / 写完后核对")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -144,6 +145,10 @@ def main():
     p_est.set_defaults(func=cmd_estimate)
 
     args = parser.parse_args()
+    # --chars-per-sec 0 会除零（ZeroDivisionError 不是 ValueError，下面的
+    # except 接不住）；在入口拦下
+    if getattr(args, "chars_per_sec", 1.0) <= 0:
+        parser.error("--chars-per-sec 必须为正数（字/秒）")
     try:
         args.func(args)
     except (ValueError, FileNotFoundError) as e:

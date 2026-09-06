@@ -1,15 +1,14 @@
 ---
 name: content-to-video
-description: 把任意信息源（用户粘贴的文本/笔记、上传的文档、网页链接、结构化资讯 API 等）自动转成一段带字幕、配图和动效的解说视频——先由当前对话模型阅读信源提炼出结构化要点，再逐句 TTS 配音，最后用 Hyperframes 渲染成片。信源不绑定任何特定 API 或格式：适用于"把这份 PDF/这篇文章/这份会议纪要/这段读书笔记做成一条讲解视频"、"做一期资讯播报"、"把这份讲义做成系列短视频"等任何"输入一批资料，输出一条配音字幕视频"的需求。触发词包括"把……做成视频"、"视频讲解/播报"、"日报视频"、"资讯视频"、"帮我出个视频版"等；只要意图是把一批文字/资料自动配音配字幕做成视频，就应使用本技能。
-version: "1.5.29"
-agent_created: true
+description: 把任意信息源（粘贴的文本/笔记、上传的文档、网页链接、结构化资讯 API）自动转成带字幕、配图和动效的解说视频——当前对话模型提炼要点写稿，逐句 TTS 配音，Hyperframes 渲染成片。适用于"把这份 PDF/文章/会议纪要/读书笔记做成讲解视频"、"做一期资讯播报"、"日报视频"、"把讲义做成系列短视频"等需求。触发词包括"把……做成视频"、"视频讲解/播报"、"资讯视频"、"帮我出个视频版"等；只要意图是输入一批文字/资料、输出一条配音字幕视频，就应使用本技能。
+version: "1.5.47"
 ---
 
 # 信源转视频（Content-to-Video）
 
 从任意信息源到成品视频：整理信源要点 → 写结构化解说稿 → 逐句 TTS 配音 → 配图 → 渲染带字幕动效的成片。
 
-> **设计原则（第一性原理）**：本技能的核心任务有五步（**整理信源** → 写结构化稿件 → 逐句 TTS 配音 → 配图 → 按时长渲染输出），下面"核心工作流"只讲这五步。**第 1 步"信源"是可插拔的**——不管资料来自哪里（粘贴文本、上传文档、网页、某个资讯 API……），只要能被提炼成"标题+正文"的条目列表，就能进入第 2 步，后面四步完全不关心信源来自哪。其中**配图默认执行**（除非用户明确说不要配图），纯文字版渲染仅在配图来源全部不可用时作为兜底。
+> **设计原则**：本技能的核心任务有五步（**整理信源** → 写结构化稿件 → 逐句 TTS 配音 → 配图 → 按时长渲染输出），下面"核心工作流"只讲这五步。**第 1 步"信源"是可插拔的**——不管资料来自哪里（粘贴文本、上传文档、网页、某个资讯 API……），只要能被提炼成"标题+正文"的条目列表，就能进入第 2 步，后面四步完全不关心信源来自哪。其中**配图默认执行**（除非用户明确说不要配图），纯文字版渲染仅在配图来源全部不可用时作为兜底。
 >
 > 渲染只维护 **Hyperframes 一条路径**（HTML/CSS/GSAP，通过 headless Chrome + ffmpeg 渲染，速度快、支持竖屏）。
 
@@ -21,6 +20,7 @@ agent_created: true
 - [一键编排（可选）](#一键编排可选)
 - [输出契约](#输出契约)
 - [不适用场景](#不适用场景)
+- [自进化闭环（维护向）](#自进化闭环维护向)
 - [附录：参考文档索引](#附录参考文档索引)
 
 ## 项目结构
@@ -37,6 +37,7 @@ content-to-video/
 │   ├── run.py                           一键编排：串联 TTS→配图→HTML→校验→渲染，输出制作报告
 │   ├── pipeline.py                      第 3 步 TTS 管线（合成/变速/断点续跑/timing_manifest）
 │   ├── build_from_structured.py         第 2 步 分句分组库（pipeline --source 内部调用）
+│   ├── check_facts.py                   第 2 步 数字漂移检查（抽全稿数字清单，供对照信源核对出处）
 │   ├── gen_hyperframes.py               第 5 步 timing_manifest → Hyperframes HTML（字幕/配色）
 │   ├── search_images.py                 第 4 步 A：StepFun 文搜图
 │   ├── gen_charts.py                    第 4 步 C：本地图表/公式/曲线（matplotlib）
@@ -44,7 +45,7 @@ content-to-video/
 │   ├── render_watch.py                  渲染命令解析辅助（run.py 内部用）
 │   ├── budget.py                        可选：时长预算（plan/estimate）
 │   ├── export_extras.py                 可选：导出章节时间戳 + SRT 字幕
-│   ├── visual_regression.py             可选：关键帧像素级视觉回归
+│   ├── visual_regression.py             可选：跨版本渲染关键帧像素回归（维护向 QA，制作流程不依赖）
 │   ├── split_series.py                  可选：长文档 → 多集 segments 骨架
 │   ├── gen_cover.py                     可选：竖版封面 + 候选标题草稿
 │   ├── check_series.py                  可选：系列跨集参数一致性检查
@@ -60,20 +61,34 @@ content-to-video/
 │   ├── rendering.md                     第 5 步 主题语义/动画/渲染调参（fps/workers/--gpu/--quality）
 │   ├── image_options.md                 第 4 步 配图方式 A/B/C/D 配置
 │   ├── tts_pipeline.md                 第 3 步 TTS 管线参数表/音色表/manifest 格式
+│   ├── script_format.md                第 2 步 segments_source.json 字段规范（完整语义/兜底行为）
 │   ├── sources.md                       信源（aihot/文档/网页/笔记）接入方式
 │   └── content_templates.md             更多内容类型举例（评测/周报/播客/书评/财报）
 └── dev/                                维护/迭代本技能用，不参与任何一次制作
-│   ├── check.py                         一键 gate（selftest+run_eval+JSON/frontmatter 校验）
+│   ├── check.py                         一键 gate（selftest+run_eval+JSON/frontmatter+wiki 契约）
 │   ├── run_eval.py                      离线集成测试（静音+ffmpeg 代替，秒级跑完）
 │   ├── evals.json                       10 条 agent 行为评估用例（另一 agent 作 grader）
-│   └── changelog.json                   版本变更记录
+│   ├── changelog.json                   版本变更记录（最近 20 条完整）
+│   ├── changelog-archive.md             更早版本的压缩归档（版本/日期/一句话摘要）
+│   ├── wiki_trace.py                    Raw Layer：执行轨迹的查看/统计/剪枝
+│   ├── wiki_maintain.py                 自进化②：轨迹蒸馏摘要 + pattern 契约校验
+│   ├── wiki_propose.py                  自进化③：生成/校验单原子改动提案（默认不改 SKILL.md）
+│   ├── wiki_gate.py                     自进化④：应用提案 → 门控 → 失败回滚
+│   ├── _wiki_common.py                  上面四个脚本的共用契约（内部模块）
+│   └── wiki/                            自进化闭环的 Wiki Layer（维护向，执行态禁止读取）
+│       ├── README.md                    三层契约与操作流程
+│       ├── PURPOSE.md                   技能目标与不可破的不变量
+│       ├── patterns/                    蒸馏出的经验（一类一文件）
+│       ├── logs.md                      维护流水（只追加）
+│       ├── skill-impact.md              每次改动 → 门控结果对照
+│       └── proposals/                   待应用的原子改动提案（含 incubating/ 孵化区）
 ```
 
 ## 环境准备
 
 ### 依赖安装
 
-- Python 3.8+（含 pip）
+- Python 3.9+（含 pip）——全部脚本只用 3.8 兼容语法，实测 Python 3.11 下 `selftest.py` 全绿；不要凭印象抬高版本门槛。环境自检跑 `python scripts/pipeline.py --check-env`，以它的输出为准
 - Node.js 22+（含 npm）—— Hyperframes CLI 通过 `npx`/`npm` 使用，渲染步骤必需（当前版 Hyperframes CLI 明确要求 Node.js 22+，18.x 已不支持；`--check-env` 会校验版本号）
 
 缺少 Python 依赖时**先检测再安装**，不要盲目整包安装：
@@ -104,6 +119,8 @@ content-to-video/
 MIMO_API_KEY=sk-xxxxx
 STEPFUN_API_KEY=xxxxx
 ```
+
+> `.env` 必须是 **UTF-8 编码**。PowerShell 5.1 的 `>` 重定向产出的是 UTF-16（脚本已能容错识别，但会打警告），记事本另存为时请右下角显式选 UTF-8——编码不对轻则 key 查不到、重则整个工具报错，且报错不一定指向编码问题
 
 - `MIMO_API_KEY`：MiMo TTS 配音使用（模型 `mimo-v2.5-tts`，免费）
 - `STEPFUN_API_KEY`：StepFun 文搜图（配图方式 A）使用；`run.py` 一键编排未配置此 Key 时跳过搜图——无任何已定稿配图时退回纯文字版（即第 4 步末条的兜底例外），`images.json` 里手动补的图（方式 B/C/D）则照常带图渲染，只有逐段搜图候选不合适（`--pick 0`）时才回退 ImageGen 生图（方式 B/C/D 不依赖此 Key）
@@ -207,31 +224,27 @@ TTS/渲染机制完全一样，不受影响）。开始整理信源前先判断�
 
 **写作规则**：
 1. 专有名词使用标准写法（英文术语如 OpenAI、ChatGPT 保留原名，中文术语用通用写法），MiMo TTS 原生支持中英混合，无需音译
-2. 每段 `text` 内部以句号、感叹号或问号结尾——脚本按标点断句，每句独立生成 TTS（除 `。！？` 外，分句也会在中文分号 `；`、ASCII 分号 `;` 和换行处断开，但每条完整句子必须以 `。！？` 之一收尾）
+2. 每段 `text` 内部以句号、感叹号或问号结尾——脚本按标点断句，每句独立生成 TTS（除 `。！？` 外，分句也会在中文分号 `；`、ASCII 分号 `;` 和换行处断开；中英混合稿里的 ASCII `.!?` 也会终止句子——小数点/缩写（U.S.、Dr.、e.g.）/省略号有边界守卫不会被误切，纯英文长段不再粘成一坨），每条完整句子仍必须以 `。！？` 之一收尾
 3. 断句后每句控制在 15-35 个字符（约 5-8 秒 TTS），避免过长句子导致节奏拖沓。超长句（>45 字）跑 pipeline 时会打 `[warn]` 提醒——字幕切行/拆 cue 只是显示层兜底，念稿喘不过气的问题要靠拆句根治
 4. 数字用阿拉伯数字（如"3.0"、"15亿"）
 5. 每段 `title` 是该条目的标题（概念名、章节标题、新闻标题、笔记要点均可），会显示在画面上；段落顺序就是 JSON 数组顺序，不需要在 `text` 里写"第N条"
-6. **事实可回溯**：正文里的每个数字、百分比、金额、结论都必须能在信源里找到出处，宁可不写数字也不能编造——对数据类内容来说，编一个数字比配错一张图更严重。数据类段落优先走第 4 步方式 C（真图表），图表数值必须来自信源本身（该规则第 4 步已有，这里再次强调）
+6. **事实可回溯**：正文里的每个数字、百分比、金额、结论都必须能在信源里找到出处，宁可不写数字也不能编造——对数据类内容来说，编一个数字比配错一张图更严重。写完稿件后跑 `python scripts/check_facts.py -s segments_source.json` 可机械抽出全稿数字清单（含上下文），逐条对照信源确认后再进第 3 步。数据类段落优先走第 4 步方式 C（真图表），图表数值必须来自信源本身
 7. **每段自包含**（信源是摘录/转写时尤其重要）：第一句必须交代清楚"主体+背景"（是谁/什么事/什么时间），最后一句给结论或落点——观众随时从中间开始看也能听懂，不能出现"它还表示…"这种无头无尾直接粘贴信源片段的句子。**引用故事/案例/比喻时尤其注意**：首次引入必须先铺“场景+前提”（人物是谁、在哪、之前发生了什么），不能从故事中段讲起——信源里的精彩片段往往依赖前文语境，摘用时要把前置场景用一两句话补出来，否则观众会觉得没头没脑（正反例见 `references/content_templates.md`"首次引入故事/案例"节）。信源缺上下文时由当前对话模型补足衔接成分（补“据 XX 消息”“在今天的发布会上”这类必要框架），补充只限衔接性信息，不得引入信源里没有的事实
 8. **段间承接**：每个内容段的第一句承担从上一段过渡过来的职责，必须钩住上一段的落点——句子里要复现上一段结尾的关键词/结论/意象，让观众听出“接着刚才的讲”，而不是每段另起炉灶换话题。禁止每段都用同款句式开头，可用句式（回顾式/递进式/设问式/场景式）与例句见 `references/content_templates.md`"承接句怎么写"节。开场白说清"本期主题+为什么值得看"，结尾段做"回顾+一句收束"，这两条是承接链的头尾
 
 > 上面的示例是"知识讲解"场景；换成其它信源时结构完全一样，只是 `title`/`tagline`/`text`
 > 填的内容不同——比如资讯播报视频里 `title` 填新闻标题、`tagline` 填来源/公司名，读书笔记视频里 `tagline` 可以填书名。
 
-字段说明：
-- **`tagline`（必填）**：标题下方小字，用于补充上下文或分类标签（如公司/机构名、章节名、发言人、来源书名、概念分类等）。由第 1 步整理信源时的当前对话模型直接写入 `segments_source.json`；若极个别情况下留空，`pipeline.py` 会对 `news*`/`seg*` 内容段落兜底为"补充阅读"，**保证画面永远显示、不会静默消失**（其它场景留空时也可按需在生成后手动修改）。`opening`/`closing` 的 `tagline` 留空时不兜底、不显示。
-- `accent`（可选，有默认值）：段落强调色，缺省按调色板顺序取
-- `speed`（可选，有默认值）：段落级语速，覆盖全局 `--speed`
-- `body`（可选，**推荐手写**）：标题下方的画面正文。与 `text`（TTS 口播稿）是两套内容：**口播稿要精炼口语化（念着顺），正文要丰富完整（看着值）**——正文可以从信源里补充口播没讲的细节、数据、原文引述，两者不必对齐。不写时兜底取该段 `text` 句子逐行展示，但有视觉行预算（约 8 行、每行约 20 字，防溢出压到底部句子流）——预算放不下会截断，且此时画面跟口播内容重复，只算及格。`\n` 分行、每行 ≤18 字、建议 3-5 行。`opening`/`closing` 没有 `body`，改用顶层 `opening_body`/`closing_body`（见下）
-- `opening_title` / `closing_title`（可选，顶层字段）：开场/结尾画面的大标题。`opening_title` 缺省回退到顶层 `title`，再缺省为"本期内容"；`closing_title` 缺省为"小结"。写稿时应按视频主题显式设置（如课程视频设 `opening_title: "第三章：反向传播"`）。
-- `opening_tagline` / `closing_tagline`（可选，顶层字段）：开场/结尾标题下方的小标题。缺省为空字符串 → 不显示小标题。只有显式给了非空字符串才会显示。
-- `opening_body` / `closing_body`（可选，顶层字段）：开场/结尾页的简介/寄语卡片（`\n` 分行，逐行入场）。是 `opening`/`closing` 朗读稿的**提炼而非重复**——开场交代"这个系列/这期讲什么、为什么值得看"，结尾回顾主线+预告下期。给了 `opening_body` 就不再自动生成开场预告（`closing_body` 同理压制回顾标签条）；两者都留空时回到 agenda/recap 的默认行为。`flow` 模式收尾页没有 recap，结尾画面建议写上 `closing_body`，否则只剩大标题。
-- `opening_agenda` / `closing_recap`（可选，顶层字段，默认 `true`）：是否自动生成开场内容预告 / 结尾回顾标签条。设 `false` 可得到干净的开场/结尾（只有大标题 + 句子流）。开场预告在章节模式下是竖排编号目录，`flow` 模式下渲染成一排轻量 chips（各段标题关键词 + accent 描边）；`closing_recap` 在 `flow` 模式下默认关闭（叙事型收尾靠 `closing_body`/稿件本身，清单式回顾与叙事气质不符，可显式设 `true` 打开）。
-- `flow`（可选，顶层字段，默认 `false`）：**自然叙事模式**。设 `true` 时：段落不显示编号 badge、开场预告渲染为轻量 chips 一排（不是竖排编号目录）、收尾回顾标签条默认关闭、段落切换不做 accent 色 wipe 扫场（改用更长的柔和 cross-fade）。适合讲解/叙事/单主题深入等"内容之间靠承接句自然流动"的视频；新闻速览/多要点日报等板块化内容保持默认的章节编号模式。两种模式的写法差异见 `references/content_templates.md`。
+**字段说明**（每个字段的完整语义与缺省兜底行为见 `references/script_format.md`）：
+- `title` + `tagline` 必填：画面标题与标题下方小字（来源/章节/发言人等分类标签）。内容段落 tagline 极个别情况下留空时，pipeline 对内容段兜底为"补充阅读"、画面不会空；`opening`/`closing` 的 tagline 不兜底
+- `text` 与 `body` 是两套内容：口播稿精炼口语化（念着顺），`body` 画面正文推荐手写（看着值，可从信源补口播没讲的细节，两者不必对齐）；不写 body 时兜底展示 text 分句（约 7 行视觉行预算）
+- 可选段落级覆盖：`accent`（强调色，缺省按调色板顺序取）、`speed`（语速，覆盖全局 `--speed`）
+- 开场/结尾专用顶层字段：`opening_title`/`closing_title`（应按主题显式设置）、`opening_tagline`/`closing_tagline`（显式给非空才显示）、`opening_body`/`closing_body`（朗读稿的提炼而非重复；给了就不再自动生成开场预告/回顾标签条）
+- `opening_agenda` / `closing_recap`（默认 `true`）：自动开场内容预告/结尾回顾标签条的开关，设 `false` 得到干净的开场/结尾
+- `flow: true` 自然叙事模式：无编号 badge、开场预告变轻量 chips、收尾 recap 默认关、切段用柔和 cross-fade——适合讲解/叙事类；新闻速览等板块化内容保持默认章节模式（两种模式写法差异见 `references/content_templates.md`）
 
-> 开场/结尾的语速：`build_from_structured.py` 会给 `opening`/`closing` 段落默认写
-> `"speed": 1.2`（比正文段落慢一点，更像正常讲解节奏），可用 `opening_speed` /
-> `closing_speed` 顶层字段覆盖。正文段落未单独指定 `speed` 时跟随全局 `--speed`（默认 1.5）。
+> 语速默认值：`opening`/`closing` 段落默认写 `"speed": 1.2`（比正文慢一点），可用
+> `opening_speed`/`closing_speed` 覆盖；正文未单独指定时跟随全局 `--speed`（默认 1.5）。
 
 **进入第 3 步**：把 `segments_source.json` 直接交给 pipeline，逐段独立分句，不需要中间产物：
 ```bash
@@ -304,14 +317,17 @@ python scripts/pipeline.py \
 
 ### 第 4 步：配图（默认执行）
 
-除非用户明确说了不要配图，第 3 步完成配音后默认接着跑配图。**路由判断先于工具调用**：先按下表逐段判断该内容适合哪种方式，再分别准备——只有方式 A 的段落交给搜图（`--sids` 指定只搜它们），B/C/D 段落直接走各自路径，不要默认全部先搜一遍图。**按内容类型选路径**：
+除非用户明确说了不要配图，第 3 步完成配音后默认接着跑配图。**路由判断先于工具调用**：先按下表逐段判断该内容适合哪种方式，再分别准备——只有方式 A 的段落交给搜图（`--sids` 指定只搜它们），B/C/D 段落直接走各自路径，不要默认全部先搜一遍图。
 
-- **故事性、过程性内容（叙事、动态过程、因果链演示）**：优先方式 D（动画/视频）——观感体感最好，观众直接看到过程和因果。但不要盲目上动画：概念推演、数学公式类内容不适合动画（公式没有可动的'故事'，强行动画化只会得到氛围镜头），那类走方式 C。
-- **专业概念、数学/物理推演（公式、特性曲线、结构框图、数据关系）**：走方式 C（代码画图表/示意图）——准确、专业、信息密度高；动画和 AI 生图都容易把严谨概念画失真，不要交给它们。公式本体用方式 C 的 `formula` 类型渲染成 SVG（mathtext 语法，本地零额度），不要搜公式截图（清晰度差且常带水印）；函数曲线（如复利 vs 单利的分化）用 `curve` 类型。
-- **抽象概念、流程、原理类内容（典型如完整讲解模式：PDF 论文、教材知识点、课程讲义）**：优先方式 B（ImageGen 生图）——这类内容本来就没有"真实照片"可搜，文搜图大概率返回不相关或标题党图片，不必先尝试方式 A 再发现不合适，浪费一轮候选下载和审阅。示意图/图解比真实照片更能传达抽象结构，也更不容易出现幻觉细节。注意 ImageGen 只适合**简单示意、适度概念化**的画面——生成结果不稳定，专业性强、逻辑严谨的概念不要交给它，那类走方式 C。
-- **有真实对应实体的内容（公司、产品、人物、事件等，典型如精选摘要模式的资讯播报）**：优先方式 A（StepFun 文搜图）——它检索的是真实网络图片，速度快、零生成额度。抽象概念没有对应实体时搜出来的图会文不对题。
-- **具体数据/数字（营收、增长率、占比、排行等，典型如财报解读、数据报告）**：优先方式 C（图表）——真实数据画出来的图表比意象图/资料照片更准确、信息量更大，"营收增长 30%"配一张图表比配一张不相关的公司照片更有说服力。
-- 拿不准或内容混合两种类型时，按段落分别判断，同一期视频里不同段落可以走不同方式（`images.json` 是按 segment id 映射的，天然支持混用）。动画时长选择、多段关联动画一致性、额度降级等细则见 `references/image_options.md` 方式 D 路由节；更多具体内容类型举例见 `references/content_templates.md`。
+| 内容类型 | 方式 | 一句话依据 |
+|---------|------|-----------|
+| 故事性、过程性（叙事、动态过程、因果链演示） | **D 动画/视频** | 观感体感最好，观众直接看到过程和因果 |
+| 专业概念、数学/物理推演（公式、特性曲线、结构框图） | **C 图表/公式** | 准确、信息密度高；动画和 AI 生图都容易把严谨概念画失真 |
+| 抽象概念、流程、原理（完整讲解模式典型：PDF 论文、教材知识点） | **B ImageGen 生图** | 本来就没有真实照片可搜，示意图比照片更能传达抽象结构 |
+| 有真实对应实体（公司、产品、人物、事件；精选摘要模式典型） | **A StepFun 文搜图** | 检索真实网络图片，快、零生成额度 |
+| 具体数据/数字（营收、增长率、占比、排行；财报解读典型） | **C 图表** | 真实数据画的图表比意象图/资料照片更有说服力 |
+
+拿不准或内容混合两种类型时按段落分别判断，同一期里不同段落可以走不同方式（`images.json` 是按 segment id 映射的，天然支持混用）。每类的判断细节与反例（公式为什么不能交给动画/ImageGen、文搜图对抽象概念为什么文不对题等）见 `references/image_options.md`「配图路由」节；动画时长选择、多段关联动画一致性、额度降级细则见同文件方式 D 节；更多具体内容类型举例见 `references/content_templates.md`。
 
 1. **方式 A：StepFun 文搜图**（`scripts/search_images.py`，按标题搜真实图片，零生成额度，只需要 `STEPFUN_API_KEY`）。脚本先下载每条的多张候选（默认 3 张）并输出 `candidates.json`（含图片摘要和本地重合度 score 提示）——**由当前对话窗口的模型审阅判断哪张贴合主题**，再用 `--pick` 指定采用（`0`=不采用，改 ImageGen 生图）。不依赖任何外部对话模型，没有 402/额度问题。按路由只有部分段落走方式 A 时，用 `--sids "seg1,seg3"` 只搜这些段落，其余段落留给方式 B/C/D（`run.py` 对应透传参数 `--search-sids`）。
 2. **方式 B：ImageGen 生图**（每张图约消耗 5-10 credits，用之前需要提醒用户）。抽象概念类内容（知识讲解、原理拆解、论文/PDF 内容）默认走这条；有真实对应实体的内容（新闻播报、产品评测）在文搜图没有合适候选时回退到这条。`run.py` 遇到缺图会停下并提示先审阅候选、`--pick` 或生图。
@@ -369,7 +385,7 @@ python scripts/gen_hyperframes.py \
 
 完全无外网的环境可以用 `--gsap-src vendor/gsap.min.js` 显式指定本地路径（需要自己提前把 `gsap.min.js` 放到 HTML 输出目录的 `vendor/` 下）。
 
-**横屏布局策略（`--aspect landscape`，默认）**：横屏是左右分区排布——标题在上、配图靠右竖排居中（默认 900×700 横版框）、左列是正文要点卡片 + 底部字幕条（bar，横屏默认模式）；传 `--sub-mode verse` 可把正文卡位置换成歌词式句子流滚动窗口（见下方「字幕/内容呈现模式」）。横屏配图是**按需选择**而非全覆盖——按第 4 步路由表判断每个段落适合什么配图方式，不强制每段都配图。但“按需”的前提是**内容性质不需要图**（过渡段、纯承接段可以留空）：搜图无结果/候选不合适**不算**按需留空，应按第 4 步转 ImageGen 生图或方式 C 图表补图——分步执行时 `gen_hyperframes.py` 会对没有配图映射的内容段落打 `[warn]` 提醒（`run.py` 一键编排则是缺图直接拦截停下），不要把这行 warn 当噪音忽略。章节模式（默认）段间用 accent 色 wipe 扫场 + 左侧编号圆 badge；flow 叙事模式关 badge、用更长 cross-fade。
+**横屏布局策略（`--aspect landscape`，默认）**：横屏是左右分区排布——标题在上、配图靠右（默认 860×700 横版框，上缘在标题带之下、下缘避开底部字幕条——单行标题完整避开图片，两行标题第二行伸入图片区时生成期告警）、左列是正文要点卡片 + 底部字幕条（bar，横屏默认模式）；传 `--sub-mode verse` 可把正文卡位置换成歌词式句子流滚动窗口（见下方「字幕/内容呈现模式」）。横屏配图是**按需选择**而非全覆盖——按第 4 步路由表判断每个段落适合什么配图方式，不强制每段都配图。但“按需”的前提是**内容性质不需要图**（过渡段、纯承接段可以留空）：搜图无结果/候选不合适**不算**按需留空，应按第 4 步转 ImageGen 生图或方式 C 图表补图——分步执行时 `gen_hyperframes.py` 会对没有配图映射的内容段落打 `[warn]` 提醒（`run.py` 一键编排则是缺图直接拦截停下），不要把这行 warn 当噪音忽略。章节模式（默认）段间用 accent 色 wipe 扫场 + 左侧编号圆 badge；flow 叙事模式关 badge、用更长 cross-fade。
 
 **竖屏短视频（`--aspect vertical`）**：默认输出 1920×1080 横屏（`landscape`）。传 `--aspect vertical` 会自动切到 1080×1920 竖屏（抖音/视频号/小红书常见格式），标题位置、图片尺寸、句子流钉底方式等布局会整体按竖屏重新适配，不需要额外传 `--width`/`--height`。
 
@@ -395,7 +411,7 @@ python scripts/gen_hyperframes.py \
 
 > 关键 CSS 约定速记：子元素（tagline、body-text）不要设 `opacity:0`（父级 clip 的 `opacity:0` 已控制可见性）——规则细节见 `references/pitfalls.md` #3。
 
-**渲染命令（快照检查 → 人工审帧 → 正式渲染）**：`npx hyperframes check --snapshots` 抓取标注关键帧后，**必须用 Read 工具逐张打开关键帧 PNG 人工审帧**（每个内容段落至少 1 帧、开场/结尾各 1 帧——查配图是否贴合对应段落、标题/正文是否溢出画布、是否与配图重叠被裁切；视觉审帧是版式问题的唯一防线，不是"跑完命令就算过"），确认无问题再进 `render_watch.py` 包装渲染 → `verify_render.py` 校验。完整命令序列，以及帧率（默认 24fps）、抓帧 worker 上限（默认 4）、`--gpu` 实测结论、`--quality` 档位等逐条说明，见 `references/rendering.md`。
+**渲染命令（快照检查 → 人工审帧 → 正式渲染）**：`npx hyperframes check --snapshots` 抓取标注关键帧后，**必须用 Read 工具逐张打开关键帧 PNG 人工审帧**（每个内容段落至少 1 帧、开场/结尾各 1 帧——查配图是否贴合对应段落、标题/正文是否溢出画布、是否与配图重叠被裁切；视觉审帧是版式问题的唯一防线，不是"跑完命令就算过"），确认无问题再进 `render_watch.py` 包装渲染 → `verify_render.py` 校验。完整命令序列，以及帧率（默认 24fps）、抓帧 worker（默认 6，实测数据见 references/rendering.md）、`--gpu` 实测结论、`--quality` 档位等逐条说明，见 `references/rendering.md`。`run.py` 另有两个迭代提效开关：HTML 未变时自动跳过 check（`--force-check` 强制重跑）、`--reuse-render` 在 HTML/音频/渲染参数都没变时复用已校验成片直接跳过渲染。
 
 #### 可选：导出章节时间戳 + SRT 字幕
 
@@ -406,6 +422,10 @@ python scripts/export_extras.py -m audio_output/timing_manifest.json -o hf-proje
 ```
 
 产出 `hf-project/chapters.txt`（B 站/YouTube 简介常用的章节时间戳格式，`00:00 开场` / `00:32 反向传播算法` ……，直接来自 `segments[]` 的分段信息，manifest 没有 `segments` 字段时会跳过并提示）和 `hf-project/captions.srt`（标准 SRT 字幕，每句一条 cue，双人对话段落的句子会带 `[说话人]` 前缀）。用 `--only chapters` 或 `--only srt` 只导出其中一个。
+
+> **竖屏/verse 项目必须显式传 `--aspect`**（`--aspect vertical|portrait`，`--sub-mode` 按画幅自动取、一般不用管）。SRT 的切行参数与片内字幕共用同一份来源，但不传 `--aspect` 时会按横屏的 28 字/行切，而竖屏画面每行只放得下 22 字——导出的字幕跟片里看到的不是同一套切法。横屏是默认值，不用传。
+
+同类的附加产出还有封面：`python scripts/gen_cover.py -s segments_source.json -o hf-project --theme dark` 从稿件直接生成竖版封面 `cover.png`（1080×1920，主题色渐变 + 首段要点文字）和 3 个候选标题草稿 `titles.json`——它只负责省去"从空白图做起"的起手式，候选标题是**草稿**，由 agent/人工终审润色后才可用。
 
 ## 一键编排（可选）
 
@@ -422,9 +442,28 @@ python scripts/run.py --source segments_source.json -o audio_output --fps 30
 python scripts/run.py --source segments_source.json -o audio_output --no-images --until html
 ```
 
-常用参数：`--no-images`（跳过配图）、`--fps`（默认 24）、`--quality`（默认 standard）、`--workers`（默认 4）、`--gpu`（有硬件编码器时开启）、`--no-check`（重渲染且 HTML 未变时跳过快照 QA）、
-`--until {tts,images,html,render}`（调试）、`--aspect`/`--theme`/`--speed`/`--voice-id`
-（透传给下游脚本）、`--no-verify`。`run.py` 生成 HTML 后会自动跑 `check --snapshots`（关键帧 QA）再渲染——注意一键编排**不会在审帧处停下等人**，要在渲染前人工把关版式，就用 `--until html` 停在 HTML 阶段，自己跑快照并按第 5 步要求逐张审帧后再重跑 `run.py`（TTS/配图有断点缓存，重跑不重复消耗额度）。`run.py` 只是**组合层**，不改变任何子脚本的
+常用参数：`--no-images`（跳过配图）、`--fps`（默认 24）、`--quality`（默认 standard）、`--workers`（默认 6）、`--gpu`（有硬件编码器时开启）、`--no-check`（跳过快照 QA）、
+`--force-check`（HTML 未变也强制重跑 check）、`--reuse-render`（成片复用：输入与参数都没变时跳过渲染）、`--until {tts,images,html,render}`（调试）、`--aspect`/`--theme`/`--speed`/`--voice-id`
+（透传给下游脚本）、`--no-verify`。
+
+其余几个按场景用得上、容易被忽略的参数：
+
+| 参数 | 作用 | 什么时候需要 |
+|------|------|-------------|
+| `--project <目录>` | HTML/渲染工程目录（默认 `<-o 同级>/hf-project`） | 想把渲染工程和音频输出分开放、或一稿渲多个版本时 |
+| `--search-sids "seg1,seg3"` | 只对列出的段落跑文搜图 | 按第 4 步路由只有部分段落走方式 A 时（其余段落走 B/C/D） |
+| `--refresh-images` | 配图不复用，全部重新搜索/下载 | 换了一批候选想重搜；默认 `--resume` 会跳过已有成品图的段落 |
+| `--no-resume` | TTS 不复用已生成的音频 | 改了音色/语速要整稿重录（默认复用会让改音色不生效） |
+| `--loudness -16` | 对最终音频做响度归一化（LUFS，透传 `pipeline.py`） | 投递平台有响度要求时；默认不做归一化。开启后成片音频为 `combined_loud.wav` |
+| `--no-trace` | 本次不落执行轨迹 | 见下方「自进化闭环」。轨迹默认写在用户目录、不进项目目录，也不影响成片 |
+
+> **注意 `--workers` 有三个同名参数，默认值不同，别串了**：`run.py` 的是**渲染抓帧** worker（默认 6）；`search_images.py` 的是**并行搜图/下载**线程（默认 4）；`pipeline.py` 的是**并行 TTS 调用**数（默认 4）。三个同名不同义，写命令时看清传的是哪个脚本。
+
+> **卡住时有兜底，不用干等**：`check --snapshots` 这一步有 300s 墙钟上限（Chrome 卡在关闭阶段时不再无限阻塞），并行阶段（TTS + 配图）有 1 小时整体上限。超时会收掉子进程并报出卡在哪一步。稿件特别长时可用 `CTV_CHECK_TIMEOUT` / `CTV_PARALLEL_TIMEOUT`（秒）调大。
+
+> **产物路径守卫**：`run.py` 会检查 `-o`/`--project` 是否落在技能目录内，是则直接报错退出——产物混进技能目录会污染仓库、也容易在多次制作之间串台。用脚本绝对路径从你的项目目录调用即可（不需要 `cd` 到技能目录）。
+
+`run.py` 生成 HTML 后会自动跑 `check --snapshots`（关键帧 QA）再渲染——注意一键编排**不会在审帧处停下等人**，要在渲染前人工把关版式，就用 `--until html` 停在 HTML 阶段，自己跑快照并按第 5 步要求逐张审帧后再重跑 `run.py`（TTS/配图有断点缓存，重跑不重复消耗额度）。`run.py` 只是**组合层**，不改变任何子脚本的
 独立性——需要逐步执行时完全可以绕开它。`run.py` 的自动配图走方式 A 文搜图（按第 4 步路由只有部分段落走方式 A 时，加 `--search-sids "seg1,seg3"` 只搜它们，其余段落按路由走 B/C/D、由缺图拦截兜住），需要 `STEPFUN_API_KEY`，没有时跳过搜图——无已定稿配图则退回纯文字版；方式 B/C/D 不依赖此 Key，手动补图写进 `images.json` 后重跑即带图渲染（缺映射的内容段落仍会被缺图拦下，提示按 ImageGen/图表补图，而不是去跑需要 Key 的搜图）。
 如果某条内容搜图结果不合适/无结果，`run.py` 会停下并列出需要 ImageGen 补图的内容段落；
 生成图片放进 HTML 输出目录下的 `images/<sid>.png`（即 `hf-project/images/<sid>.png`）后，还需让 `images.json` 里有该 sid 的映射再重跑——只放图不写映射仍会被缺图拦截：重跑 `search_images.py --resume` 会自动采纳目录里已存在的成品图写回 `images.json`，或按 `references/image_options.md` 的「images.json 统一格式」节手写映射。
@@ -438,16 +477,13 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 > （上例为 bash 语法；Windows PowerShell 没有 `&` 后台与 `wait`——开两个终端分别跑这两条命令，或改用 Git Bash。）
 > `search_images.py` 的 `-m/--manifest`（从 `timing_manifest.json` 取标题）和 `--source`（直接从 `segments_source.json` 取标题）两种输入二选一，效果等价（`id` 按位置分配为 `seg1`/`seg2`/...，两条路径的取值规则完全一致）。日常制作只有 `segments_source.json` 时直接用 `--source`；只有手里只剩一份 manifest（比如复用历史产物）时才需要 `-m`。
 
-## 关键陷阱
-
-制作过程中的 18 条具体踩坑记录（TTS 中英混合、字幕同步、Hyperframes 渲染细节、ffmpeg 路径问题等）见 `references/pitfalls.md`——首次执行前建议先通读一遍，之后遇到报错或异常现象时按需回查。其余深度参考（内部机制速览、信源接入、内容类型举例、各步骤参数细节）的完整索引见[附录：参考文档索引](#附录参考文档索引)，正文不重复罗列。
-
 ## 输出契约
 
 | 信号 | 含义 |
 |------|------|
 | `audio_output/combined.wav` | 完整配音音频（纯人声） |
 | `audio_output/combined_bgm.wav` | 混入 BGM 的音频（仅 --bgm 时生成） |
+| `audio_output/combined_loud.wav` | 响度归一化后的音频（仅 `--loudness` 时生成） |
 | `audio_output/timing_manifest.json` | 逐句时间清单（含实测总时长 + 可选 segments 分组） |
 | `hf-project/images.json` | 配图映射（第 4 步产出，供第 5 步 `--images` 使用） |
 | `python scripts/verify_render.py -f <mp4> -m <manifest>` | 渲染校验通过（时长匹配 + H.264 + AAC），exit 0 |
@@ -462,6 +498,61 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 - **纯英文视频**：预置的 `Mia`/`Chloe`/`Milo`/`Dean` 等英文音色仅用于中文稿件中偶尔出现的英文术语（如产品名）朗读，断句规则（中文标点）也是针对中文稿件设计的。若整篇稿件是纯英文或以非中文语言为主，断句会失效，此技能不适用
 - 实时/流式视频生成
 
+## 自进化闭环（维护向）
+
+> **本节只在"改进本技能"时读，做视频时不需要、也不应该读。**
+
+本技能带一套自进化闭环（做法来自 WikiSkill，arXiv 2608.27454）：每次制作留下
+一条不可变轨迹 → 维护期把轨迹蒸馏成经验 → 每次只提一处原子改动 → 门控不通过
+就回滚。**skill 层会回滚，经验层不会。**
+
+| 层 | 落点 | 回滚 |
+|---|---|---|
+| Raw（轨迹） | `~/.config/ai-video/traces/`（可用 `CTV_TRACE_DIR` 改） | 只追加，可剪枝 |
+| Wiki（经验） | `dev/wiki/` | **永不回滚** |
+| Skill（可执行） | `SKILL.md`、`references/`、`config/`、`scripts/` | 门控红即回滚 |
+
+每次 `run.py` 实跑结束会旁路写一条轨迹（环境指纹、参数、各阶段耗时、是否触发
+兜底、失败环节）。轨迹**不写进项目目录、也不写进技能目录**——它是维护期的观测
+数据，混进产物会污染项目；想完全关掉用 `--no-trace` 或 `CTV_TRACE=0`。轨迹里
+不含绝对路径、稿件正文与任何密钥（去敏在 `scripts/_trace.py` 里机械保证）。
+
+### ⚠️ 执行态禁止读取 dev/wiki/
+
+论文的消融实验给了一个反直觉结论：把 wiki 塞给执行态的 agent，得分从 68.1%
+**跌到 60.9%**。wiki 是**离线优化侧的资产，不是运行时提示词**。
+
+所以：**执行本技能做视频时不要读 `dev/wiki/` 下的任何文件**。想让某条历史教训
+影响执行行为，正确做法是把它蒸馏成 `SKILL.md` / `references/` 里的一条具体
+规则，而不是把整个经验库挂进上下文。这条约束由 `dev/check.py` 的
+`执行层纯度` 检查机械把关。
+
+### 一次迭代
+
+```bash
+python dev/wiki_trace.py stats                      # 看轨迹统计
+python dev/wiki_maintain.py --brief --since-last    # 蒸馏摘要（≤5 失败+≤3 成功）
+#   → 照摘要写/改 dev/wiki/patterns/*.md
+python dev/wiki_maintain.py --commit                # 校验 pattern 契约
+# -o 落盘；不给 -o 则打到 stdout。--from 可重复，--target 预填目标文件
+python dev/wiki_propose.py --scaffold --from <pattern-id> \
+       --target <目标文件> --risk low -o dev/wiki/proposals/x.json
+#   → 填完 rationale/old/new/expected_impact 后
+python dev/wiki_propose.py --validate dev/wiki/proposals/x.json
+python dev/wiki_gate.py --apply dev/wiki/proposals/x.json    # 门控不过自动回滚
+```
+
+`wiki_gate.py` 会**先跑基线门控再应用**：如果应用前就已经是红的，它会拒绝应用
+并说明"红的不是这份提案造成的"。回滚用文件级快照（`.snapshots/`），**不用
+`git checkout --`**——后者会把你没提交的在制品一起抹掉。
+
+被门控拒掉的提案不删，进 `proposals/incubating/`，后来的经验若指向它可以
+`--revive` 复活。
+
+> 别拿这套机制对标论文里的 +18.6 分：那个数字来自"有标准答案、机器可判分"的
+> 基准任务，本技能没有这类标量指标。这里能拿到的是**每处改动都有证据、有门控、
+> 有回滚、经验不随回滚蒸发**——机制可以复刻，涨幅不能。
+
 ## 附录：参考文档索引
 
 均为按需查阅、非必读（首次执行前建议先通读 `references/pitfalls.md`）：
@@ -469,7 +560,8 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 - `references/pitfalls.md` — 18 条踩坑记录；日常制作不必逐条看，遇到报错或异常现象时按需回查
 - `references/internals.md` — 内部机制速览：数据流全景 / 路径解析速记 / 缓存与断点续跑（排查诡异路径/缓存问题时查阅）
 - `references/tts_pipeline.md` — 第 3 步 TTS 管线参数、预置音色、manifest 格式
-- `references/image_options.md` — 第 4 步 配图方式 A/B/C/D 配置
+- `references/script_format.md` — 第 2 步 segments_source.json 全部字段的语义与缺省兜底行为
+- `references/image_options.md` — 第 4 步 配图方式 A/B/C/D 配置与配图路由展开
 - `references/rendering.md` — 第 5 步 主题语义/动画/渲染调参（fps/workers/--gpu/--quality）
 - `references/sources.md` — 信源（aihot/文档/网页/笔记）接入方式
 - `references/content_templates.md` — 更多内容类型举例（评测/周报/播客/书评/财报）

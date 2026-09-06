@@ -64,6 +64,9 @@ from _contracts import (validate_segments_source, estimate_sentence_seconds,  # 
                         DEFAULT_CHARS_PER_SEC)
 
 RESULTS = []
+# 环境缺能力（而非本技能有回归）时记到这里：不计入 pass/fail，不把环境问题
+# 伪装成失败，也不伪装成通过——维护者一眼能分辨"没跑"和"跑了没过"。
+SKIPPED = []
 
 
 def check(name, cond, detail=""):
@@ -71,6 +74,11 @@ def check(name, cond, detail=""):
     mark = "OK" if cond else "FAIL"
     print(f"  [{mark}] {name}" + (f" — {detail}" if detail and not cond else ""))
     return cond
+
+
+def skip(name, reason):
+    SKIPPED.append((name, reason))
+    print(f"  [SKIP] {name} — {reason}")
 
 
 # ── 对应 evals.json 维度 (4)：segments 条数在 5-8 条范围内的机械检查 ──────
@@ -156,15 +164,49 @@ def build_fake_manifest(source, out_dir, gap=0.3, chars_per_sec=DEFAULT_CHARS_PE
 # 合成一段时长匹配、编码为 H.264+AAC 的黑屏测试视频，喂给 verify_render.py。
 # 校验的是 verify_render.py 的判断逻辑本身，不是真实画面内容——画面对不对
 # 是维度 (3)，仍然需要人看，这里不冒充能测。
+def pick_h264_encoder(ffmpeg_path):
+    """挑一个本机可用的 H.264 编码器，返回编码器名；一个都没有时返回 None。
+
+    写死 libx264 会让"ffmpeg 能跑但不含 libx264"这类环境（minimal 构建、
+    部分 Docker/conda 包）把环境限制报成本技能回归。这里按可用性降序回退，
+    拿不到编码器列表时退回 libx264（让真正的报错从合成那一步如实冒出来）。
+    """
+    try:
+        r = subprocess.run([ffmpeg_path, "-hide_banner", "-encoders"],
+                           capture_output=True, text=True, timeout=30)
+        encoders = r.stdout or ""
+    except Exception:
+        return "libx264"
+    for enc in ("libx264", "libopenh264", "h264_nvenc", "h264_qsv",
+                "h264_vulkan", "h264_vaapi", "h264_amf", "h264_v4l2m2m"):
+        if f" {enc} " in encoders:
+            return enc
+    return None
+
+
 def build_fake_render(ffmpeg_path, audio_path, duration, out_path):
+    """返回 True=合成成功 / False=脚本链路问题 / None=环境缺编码器（应 SKIP）。
+
+    失败时把 ffmpeg 的 stderr 尾部打出来：吞掉报错的话，维护者只能看到一行
+    "[FAIL] 测试视频合成成功"，无从判断是回归还是本机 ffmpeg 少编码器。
+    """
+    enc = pick_h264_encoder(ffmpeg_path)
+    if enc is None:
+        return None
     r = subprocess.run([
         ffmpeg_path, "-y",
         "-f", "lavfi", "-i", f"color=c=black:s=320x240:d={duration}",
         "-i", audio_path,
-        "-c:v", "libx264", "-c:a", "aac",
+        "-c:v", enc, "-c:a", "aac",
         "-shortest", out_path,
-    ], capture_output=True, text=True, timeout=60)
-    return r.returncode == 0 and os.path.isfile(out_path)
+    ], capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60)
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        print(f"      合成失败（编码器 {enc}，退出码 {r.returncode}）：", flush=True)
+        for line in (r.stderr or "").strip().splitlines()[-5:]:
+            print(f"        {line}", flush=True)
+        return False
+    return True
 
 
 FIXTURE = {
@@ -206,7 +248,7 @@ def main():
         html_path = os.path.join(td, "index.html")
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
                              "-m", manifest_path, "-o", html_path],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         check("gen_hyperframes.py 退出码 0", r.returncode == 0, r.stderr[-500:])
         check("index.html 已生成", os.path.isfile(html_path))
         if os.path.isfile(html_path):
@@ -218,7 +260,7 @@ def main():
         print("\n[4] export_extras.py 导出章节/字幕（真子进程，真实调用）")
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "export_extras.py"),
                              "-m", manifest_path, "-o", td],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         check("export_extras.py 退出码 0", r.returncode == 0, r.stderr[-500:])
         check("chapters.txt 已生成", os.path.isfile(os.path.join(td, "chapters.txt")))
         check("captions.srt 已生成", os.path.isfile(os.path.join(td, "captions.srt")))
@@ -228,13 +270,20 @@ def main():
         fake_mp4 = os.path.join(td, "fake_render.mp4")
         built = build_fake_render(ffmpeg_path, manifest["combined_audio"],
                                    manifest["total_duration"], fake_mp4)
-        check("测试视频合成成功", built)
-        if built:
-            r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "verify_render.py"),
-                                 "-f", fake_mp4, "-m", manifest_path],
-                                capture_output=True, text=True)
-            check("verify_render.py 判定通过（时长匹配 + H.264/AAC）",
-                  r.returncode == 0, (r.stdout + r.stderr)[-500:])
+        if built is None:
+            # 维度 (1)(2) 要求成片是 H.264，本机 ffmpeg 一个 H.264 编码器
+            # 都没有时无从合成——这是环境限制，不是本技能回归，按 SKIP 处理。
+            skip("测试视频合成（含 verify_render 校验）",
+                 "本机 ffmpeg 不含任何 H.264 编码器"
+                 "（libx264/libopenh264/h264_nvenc…），换一个完整 ffmpeg 后自动恢复")
+        else:
+            check("测试视频合成成功", built)
+            if built:
+                r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "verify_render.py"),
+                                     "-f", fake_mp4, "-m", manifest_path],
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
+                check("verify_render.py 判定通过（时长匹配 + H.264/AAC）",
+                      r.returncode == 0, (r.stdout + r.stderr)[-500:])
 
     print("\n[6] run.py 第3/4步并行编排（假脚本代替真 TTS/配图 API，验证真并发+失败传播）")
     check_run_parallel_orchestration()
@@ -267,7 +316,7 @@ def check_image_integrity_validation():
             json.dump({"news1": {"src": "images/does_not_exist.png"}}, f)
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
                              "-m", manifest_path, "-o", html_path, "--images", images_json],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         check("缺失图片：退出码非 0", r.returncode != 0)
         check("缺失图片：报错信息指出具体路径",
               "does_not_exist.png" in r.stderr, r.stderr[-300:])
@@ -281,7 +330,7 @@ def check_image_integrity_validation():
             json.dump({"news1": {"src": "images/news1.png"}}, f)
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
                              "-m", manifest_path, "-o", html_path, "--images", images_json2],
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         check("损坏图片：退出码非 0", r.returncode != 0)
         check("损坏图片：报错信息标明「损坏/无法解码」",
               "损坏" in r.stderr or "无法解码" in r.stderr, r.stderr[-300:])
@@ -292,7 +341,7 @@ def check_image_integrity_validation():
             _PILImage.new("RGB", (4, 4), color="red").save(corrupt_path)
             r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
                                  "-m", manifest_path, "-o", html_path, "--images", images_json2],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace")
             check("正常图片：退出码为 0", r.returncode == 0, r.stderr[-300:])
             check("正常图片：HTML 已生成", os.path.isfile(html_path))
         except ImportError:
@@ -375,9 +424,13 @@ FAKE_PIPELINE_SRC = '''import sys, time, os, json
 out = sys.argv[sys.argv.index("-o") + 1]
 os.makedirs(out, exist_ok=True)
 time.sleep(1.2)
+# fixture 必须满足 timing_manifest 契约（顶层 sentences 非空、每段
+# sentences 非空、句子四字段齐全）——run.py 的 _image_coverage 走
+# load_timing_manifest 校验，空列表会被当成坏产物拒收。
+_sent = {"index": 0, "text": "内容。", "start_time": 0.0, "duration": 1.0}
 with open(os.path.join(out, "timing_manifest.json"), "w") as f:
-    json.dump({"sentences": [], "total_duration": 1.0,
-               "segments": [{"id": "news1", "title": "t1", "sentences": []}]}, f)
+    json.dump({"sentences": [_sent], "total_duration": 1.0,
+               "segments": [{"id": "news1", "title": "t1", "sentences": [_sent]}]}, f)
 '''
 
 FAKE_SEARCH_IMAGES_SRC = '''import sys, time, os, json
@@ -398,10 +451,13 @@ FAKE_PIPELINE_SRC_2NEWS = '''import sys, time, os, json
 out = sys.argv[sys.argv.index("-o") + 1]
 os.makedirs(out, exist_ok=True)
 time.sleep(0.1)
+# 同上：契约要求顶层与每段的 sentences 都非空。
+_s1 = {"index": 0, "text": "内容一。", "start_time": 0.0, "duration": 1.0}
+_s2 = {"index": 1, "text": "内容二。", "start_time": 1.0, "duration": 1.0}
 with open(os.path.join(out, "timing_manifest.json"), "w") as f:
-    json.dump({"sentences": [], "total_duration": 1.0,
-               "segments": [{"id": "news1", "title": "t1", "sentences": []},
-                            {"id": "news2", "title": "t2", "sentences": []}]}, f)
+    json.dump({"sentences": [_s1, _s2], "total_duration": 2.0,
+               "segments": [{"id": "news1", "title": "t1", "sentences": [_s1]},
+                            {"id": "news2", "title": "t2", "sentences": [_s2]}]}, f)
 '''
 
 FAKE_SEARCH_IMAGES_MISSING_SRC = '''import sys, time, os, json
@@ -411,13 +467,18 @@ time.sleep(0.1)
 # news1 有定稿配图，news2 只有候选、没定稿——复现 run.py "缺图" 分支。
 with open(os.path.join(out, "..", "images.json"), "w") as f:
     json.dump({"news1": {"src": "images/news1.png"}}, f)
-try:
-    from PIL import Image
-    for i in range(1, 3):
-        Image.new("RGB", (8, 8), color="blue").save(
-            os.path.join(out, f"news2_cand{i}.png"))
-except ImportError:
-    pass
+# 1x1 蓝色 PNG 的最小字节序列（硬编码，零依赖）：候选图落盘不依赖 Pillow，
+# 保证离线 gate 在没有 PIL 的机器上也能验证"缺图提示列出候选路径"这条链路。
+# 注意双反斜杠是刻意的：这段源码会被原样写进假脚本文件再执行，外层字符串
+# 不能把十六进制转义提前解释成真实字节（0x89 单独出现会让假脚本的
+# UTF-8 源非法）
+_MIN_PNG = (b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01"
+            b"\\x00\\x00\\x00\\x01\\x08\\x02\\x00\\x00\\x00\\x90wS\\xde"
+            b"\\x00\\x00\\x00\\x0cIDATx\\x9cc``\\xf8\\x0f\\x00\\x01"
+            b"\\x03\\x01\\x00\\x08\\x89\\xc2\\xec\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82")
+for i in range(1, 3):
+    with open(os.path.join(out, f"news2_cand{i}.png"), "wb") as f:
+        f.write(_MIN_PNG)
 '''
 
 
@@ -497,6 +558,8 @@ def _summarize():
     passed = sum(1 for _, ok in RESULTS if ok)
     total = len(RESULTS)
     print(f"\n=== {passed}/{total} passed ===")
+    if SKIPPED:
+        print(f"（另有 {len(SKIPPED)} 项因本机环境缺能力而 SKIP，非本技能回归）")
     print("\n提醒：本脚本只验证脚本链路本身跑得通、维度(1)(2)(4)的机械检查——")
     print("evals.json 里全部 agent 行为评估用例（能不能正确取材/降级/拒绝越界请求）")
     print("agent 行为评估仍由另一个 agent 实例（作为 grader）forward-test，"
@@ -506,7 +569,9 @@ def _summarize():
         "passed": passed,
         "failed": total - passed,
         "total": total,
+        "skipped": len(SKIPPED),
         "results": [{"name": name, "ok": ok} for name, ok in RESULTS],
+        "skips": [{"name": name, "reason": reason} for name, reason in SKIPPED],
     }
     print("__SUMMARY_JSON__ " + json.dumps(summary, ensure_ascii=False))
     if passed != total:

@@ -10,7 +10,8 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _contracts import load_timing_manifest, load_segments_source  # noqa: E402
+from _contracts import (load_timing_manifest, load_segments_source,  # noqa: E402
+                        is_content_sid)
 
 
 def extract_titles_from_manifest(manifest_path):
@@ -26,7 +27,7 @@ def extract_titles_from_manifest(manifest_path):
     for seg in segments:
         sid = seg.get("id", "")
         # 为 news/seg 段落提取标题（跳过 opening/closing）
-        if sid.startswith("news") or sid.startswith("seg"):
+        if is_content_sid(sid):
             title = seg.get("title", "").strip()
             if title:
                 # 清理标题：去掉尾部标点（API 对尾部标点敏感）

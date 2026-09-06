@@ -39,37 +39,67 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _script_utils import split_sentences  # noqa: E402
+from _script_utils import split_sentences, setup_stdio  # noqa: E402
 from _contracts import (DEFAULT_SPEED, DEFAULT_CHARS_PER_SEC, DEFAULT_GAP,  # noqa: E402
                         estimate_sentence_seconds)  # 默认倍速/时长估算单一来源
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
+def _split_sections_by_headings(lines):
+    """按 Markdown 标题行切分；``` 围栏代码块内的 '#' 行不算标题。
+
+    技术文档里代码块内以 # 开头的行几乎都是注释（shell/python 配置示例），
+    不做围栏识别会把注释行当成小节标题、切出垃圾小节。
+    """
+    sections = []
+    cur_title, cur_body = None, []
+    in_fence = False
+
+    def _flush():
+        nonlocal cur_title, cur_body
+        if cur_title is not None or cur_body:
+            sections.append((cur_title or "（前言）", "\n".join(cur_body).strip()))
+        cur_title, cur_body = None, []
+
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            cur_body.append(line)
+            continue
+        m = None if in_fence else _HEADING_RE.match(line)
+        if m:
+            _flush()
+            cur_title = m.group(2)
+        else:
+            cur_body.append(line)
+    _flush()
+    return [(t, b) for t, b in sections if b.strip()]
+
+
 def parse_sections(text):
     """把文档切成 [(title, body), ...] 小节列表。
 
-    优先按 Markdown 标题；文档里一个标题都没有时，退化为按空行分块。
+    优先按 Markdown 标题（围栏代码块内的 '#' 行不算，见
+    _split_sections_by_headings）；文档里一个标题都没有时，
+    退化为按空行分块。
     """
     lines = text.splitlines()
-    sections = []
-    cur_title, cur_body = None, []
 
-    has_headings = any(_HEADING_RE.match(line) for line in lines)
+    has_headings = False
+    in_fence = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and _HEADING_RE.match(line):
+            has_headings = True
+            break
 
     if has_headings:
-        for line in lines:
-            m = _HEADING_RE.match(line)
-            if m:
-                if cur_title is not None or cur_body:
-                    sections.append((cur_title or "（前言）", "\n".join(cur_body).strip()))
-                cur_title, cur_body = m.group(2), []
-            else:
-                cur_body.append(line)
-        if cur_title is not None or cur_body:
-            sections.append((cur_title or "（前言）", "\n".join(cur_body).strip()))
-        sections = [(t, b) for t, b in sections if b.strip()]
+        sections = _split_sections_by_headings(lines)
     else:
+        sections = []
         blocks = re.split(r"\n\s*\n+", text.strip())
         for block in blocks:
             block = block.strip()
@@ -113,19 +143,15 @@ def plan_episodes(sections, target_seconds=None, n_episodes=None,
     for (title, body), dur in zip(sections, sec_durations):
         if cur and (cur_dur + dur) > target_seconds and not (
                 n_episodes and len(episodes) == n_episodes - 1):
+            # 收尾开新集的守卫：已经切出 n-1 集时，剩余小节全部留在第 n 集
+            #（只在边界切的代价是最后一集可能超预算）。因此 len(episodes)
+            # 恒 <= n_episodes，不需要"多切出来再合并回去"的兜底分支。
             episodes.append(cur)
             cur, cur_dur = [], 0.0
         cur.append((title, body, dur))
         cur_dur += dur
     if cur:
         episodes.append(cur)
-
-    # n_episodes 模式下贪心可能多切出/少切出一集（小节时长分布不均时常见），
-    # 简单兜底：多出来的最后一集并入倒数第二集，比强行拆一个小节更符合
-    # "只在边界切"的原则。
-    if n_episodes and len(episodes) > n_episodes:
-        episodes[-2].extend(episodes[-1])
-        episodes.pop()
 
     return episodes
 
@@ -152,6 +178,7 @@ def write_skeleton(episode, out_path, episode_index=None, total_episodes=None,
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="长文档 → 系列 segments_source_N.json 骨架")
     parser.add_argument("-i", "--input", required=True, help="长文档路径（纯文本/Markdown）")
     parser.add_argument("-o", "--output", required=True, help="输出目录")
@@ -167,11 +194,13 @@ def main():
 
     # --episodes 0 会在 plan_episodes 里除零（ZeroDivisionError 不是
     # ValueError，main 的 except 接不住）；--target-seconds 非正会退化成
-    # 每节一集。都在入口拦下。
+    # 每节一集；--chars-per-sec 0 会在时长估算里除零。都在入口拦下。
     if args.episodes is not None and args.episodes < 1:
         parser.error("--episodes 至少为 1")
     if args.target_seconds is not None and args.target_seconds <= 0:
         parser.error("--target-seconds 必须为正数（秒）")
+    if args.chars_per_sec <= 0:
+        parser.error("--chars-per-sec 必须为正数（字/秒）")
 
     try:
         with open(args.input, "r", encoding="utf-8") as f:

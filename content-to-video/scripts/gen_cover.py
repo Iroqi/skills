@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _contracts import load_segments_source  # noqa: E402
 from _theme import get_theme_colors, list_theme_names  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -173,6 +174,7 @@ def render_cover(title, theme_name, out_path, width=1080, height=1920):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="从 segments_source.json 生成封面图 + 候选标题草稿")
     parser.add_argument("-s", "--source", required=True, help="segments_source.json 路径")
     parser.add_argument("-o", "--output", required=True, help="输出目录")

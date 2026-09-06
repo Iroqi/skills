@@ -24,6 +24,9 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
+
 # find_drifts 里"整个记录没有该字段"（源文件缺失/解析失败）的哨兵，
 # 区别于"字段值为 None"（源 JSON 里手滑漏写该字段）——前者没有数据、
 # 跳过不比；后者参与对比，漏写本身可能就是 drift。
@@ -90,13 +93,25 @@ def find_drifts(episodes):
         return []
     drifts = []
 
+    def _norm(v):
+        """数值跨 JSON int/float 归一（一处写 24 一处写 24.0 不是 drift）。"""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return float(v)
+        return v
+
+    def _vals_equal(a, b):
+        return _norm(a) == _norm(b)
+
     def _cmp(field, getter):
         vals = []
         for e in episodes:
             v = getter(e)
             if v is not None:
                 vals.append((os.path.basename(e["dir"]), v))
-        if len(vals) >= 2 and len({repr(v) for _, v in vals}) > 1:
+        if len(vals) >= 2 and any(
+                not _vals_equal(vals[0][1], v) for _, v in vals[1:]):
             drifts.append(
                 f"{field} 不一致: " + "; ".join(f"{d}={v!r}" for d, v in vals))
 
@@ -110,7 +125,8 @@ def find_drifts(episodes):
             v = getter(e)
             if v is not _ABSENT:
                 vals.append((os.path.basename(e["dir"]), v))
-        if len(vals) >= 2 and len({repr(v) for _, v in vals}) > 1:
+        if len(vals) >= 2 and any(
+                not _vals_equal(vals[0][1], v) for _, v in vals[1:]):
             drifts.append(
                 f"{field} 不一致: " + "; ".join(
                     f"{d}={'<缺失>' if v is None else repr(v)}" for d, v in vals))
@@ -125,6 +141,7 @@ def find_drifts(episodes):
 
 
 def main():
+    setup_stdio()
     ap = argparse.ArgumentParser(description="系列一致性检查（跨集参数 drift）")
     ap.add_argument("-r", "--root", default=os.path.join(".", "chapters"),
                     help="系列根目录（默认 ./chapters；集目录为其下子目录）")

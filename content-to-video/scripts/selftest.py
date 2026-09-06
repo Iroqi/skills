@@ -41,7 +41,6 @@ import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -142,8 +141,8 @@ def main():
           ob_segs[0].get("body") == "课程简介第一行\n课程简介第二行"
           and ob_segs[-1].get("body") == "收尾寄语第一行",
           [ob_segs[0].get("body"), ob_segs[-1].get("body")])
-    # 自动 body 行预算：5 句 30 字长句（每句占 2 视觉行）→ 8 行预算只放
-    # 得下前 4 句；短句不受影响。防止兜底 body 溢出压到字幕栏。
+    # 自动 body 行预算：5 句 30 字长句（每句占 2 视觉行）→ 7 行预算只放
+    # 得下前 3 句；短句不受影响。防止兜底 body 溢出压到字幕栏。
     long_seg_src = {
         "opening": "", "closing": "",
         "segments": [{"title": "长段", "text":
@@ -156,7 +155,7 @@ def main():
     _, long_segs = build_parts(long_seg_src)
     _lb = long_segs[0].get("body", "")
     check("auto body capped by visual-line budget",
-          len(_lb.split("\n")) == 4 and "预算五" not in _lb, repr(_lb))
+          len(_lb.split("\n")) == 3 and "预算四" not in _lb, repr(_lb))
 
     # 各段独立分句：段内短句只在本段内合并，不跨段错位
     bad_src = {
@@ -292,7 +291,7 @@ def main():
     hc_flat = [l for g in hc for l in g]
     check("ssc: no-punct long hard-splits across cues <=hard_cap",
           all(len(l) <= 40 for l in hc_flat) and "".join(hc_flat) == "一" * 60, hc)
-    # 回归：含英文专名的稀疏标点长句（2026-08-18 IDX26 类型）——不能整句交
+    # 回归：含英文专名的稀疏标点长句——不能整句交
     # CSS 换行溢出成 3+ 视觉行；次要标点切不动时按硬上限字符级切分。
     sparse = ("Google 开源了基于 Agent Development Kit 和 Gemini 的零信任客服与"
               "退货智能体示例，专门演示如何防御提示注入。")
@@ -402,6 +401,31 @@ def main():
     html4 = generate_html(manifest4, "audio/combined.wav")
     check("opening agenda suppressed", 'id="agendalist-' not in html4)
     check("closing recap suppressed", 'id="chiprow-' not in html4)
+    # 目录/回顾不封顶：>8 条时全量呈现，不再有"…等共 N 条"提示行
+    many_sents = [
+        {"index": i, "text": f"第{i}个要点的内容。",
+         "start_time": i * 2.0, "duration": 1.8}
+        for i in range(12)
+    ]
+    manifest_many = {
+        "sentences": many_sents,
+        "total_duration": 24.5,
+        "segments": (
+            [{"id": "opening", "title": "开场", "tagline": "", "body": "",
+              "accent": default_accent, "sentences": many_sents[:1]}]
+            + [{"id": f"news{k}", "title": f"第{k}条", "tagline": "", "body": "",
+                "accent": "#ffd54f", "sentences": [many_sents[k]]}
+               for k in range(1, 11)]
+            + [{"id": "closing", "title": "收尾", "tagline": "", "body": "",
+                "accent": default_accent, "sentences": [many_sents[11]]}]
+        ),
+    }
+    html_many = generate_html(manifest_many, "audio/combined.wav")
+    check("agenda >8 条全量显示（无封顶截断）",
+          'id="agendaitem-opening-9"' in html_many)
+    check("closing recap >8 条全量显示",
+          'id="recapchip-closing-9"' in html_many)
+    check("无 '等共 N 条' 封顶提示行", "等共" not in html_many)
 
     # 3b. flow 自然叙事模式渲染：无编号 badge、无 wipe 扫场、开场预告是
     # 轻量 chips（默认生成，竖排编号目录仍不出现）、closing
@@ -428,8 +452,7 @@ def main():
           'id="chiprow-opening"' in html_flow)
     check("flow: chips 预告带 accent 描边",
           'recapchip-opening-0' in html_flow and 'border-color' in html_flow)
-    check("flow: 无 recap-more 封顶行（条目数 ≤ AGENDA_MAX）",
-          "等共" not in html_flow)
+    check("flow: 无 '等共 N 条' 封顶提示行", "等共" not in html_flow)
     flow_manifest_off = {
         **manifest,
         "flow": True,
@@ -469,7 +492,7 @@ def main():
                               "preview.js"), encoding="utf-8").read()
     check("preview.js gated for headless",
           "navigator.webdriver" in pj and "__pvUpdate" in pj
-          and "indexOf('preview')" in pj)
+          and "HeadlessChrome" in pj and "has('preview')" in pj)
 
     # 4b. 双人对话数据层：speaker 字段 -> cues 里的 speaker/spk（显示层
     # 已随 sub-bar 移除，verse 句子流不区分说话人；数据保留供下游消费）
@@ -607,7 +630,7 @@ def main():
     check("atempo 0.25 chained",
           build_atempo_filter(0.25) == "atempo=0.5,atempo=0.5",
           build_atempo_filter(0.25))
-    # 回归：speed<=0 / 非有限值曾经会让第二个 while 死循环（remaining/=0.5 对
+    # 回归：speed<=0 / 非有限值会让第二个 while 死循环（remaining/=0.5 对
     # 非正数永不收敛），现在必须在入口就抛 ValueError。
     for bad_speed in (0, -1, 0.0, -0.5):
         try:
@@ -766,9 +789,22 @@ def main():
           os.path.basename(r[0]).lower().startswith("node"), r[0])
     if os.name == "nt":
         r2 = resolve_command(["npx", "hyperframes", "--version"])
-        check("resolve npx via comspec on Windows",
-              os.path.basename(r2[0]).lower() in ("cmd.exe", "cmd")
-              and r2[1] == "/c", r2[0])
+        # 首选形态：解析 npx.shim 直调 node + npx-cli.js（绕开 cmd.exe 的
+        # 引号二次解析——历史教训：/d /s /c + 外层引号被 Popen list2cmdline
+        # 二次转义成 \" 开头，cmd 不剥引号、整串被当命令名，渲染全挂）
+        _npx_direct = os.path.isfile(os.path.join(
+            os.path.dirname(os.path.abspath(shutil.which("npx") or
+                                            shutil.which("npx.cmd") or "")),
+            "node_modules", "npm", "bin", "npx-cli.js"))
+        if _npx_direct:
+            check("resolve npx via node+npx-cli.js direct spawn",
+                  r2[0].lower().endswith("node.exe")
+                  and r2[1].lower().endswith("npx-cli.js")
+                  and r2[2:] == ["hyperframes", "--version"], r2)
+        else:
+            check("resolve npx via comspec fallback",
+                  os.path.basename(r2[0]).lower() in ("cmd.exe", "cmd")
+                  and r2[1] == "/c", r2)
 
     # 11. search_images deterministic relevance (no LLM)
     print("\n[10] search_images deterministic relevance")
@@ -956,7 +992,7 @@ def main():
                       os.path.exists(out_path) and os.path.getsize(out_path) > 1000,
                       os.path.getsize(out_path) if os.path.exists(out_path) else "missing")
                 # 画布比例断言（方式 C 输出 4:3，与方式 B 的
-                # landscape_4_3 同一约定——横屏 860×680 槽填充率 95%）
+                # landscape_4_3 同一约定——横屏 860×700 槽填充率 92%）
                 h_px, w_px = imread(out_path).shape[:2]
                 check(f"gen_charts {chart_type} canvas is 4:3 (1200×900)",
                       (w_px, h_px) == (1200, 900), f"{w_px}×{h_px}")
@@ -1144,23 +1180,37 @@ def main():
             check("split_series: single-episode skeleton has no _series_meta",
                   "_series_meta" not in json.load(f))
 
-    # 17. run._image_coverage：缺图拦截的判定核心（H1 回归防护——曾因外层
-    # 多套了一个 has_images 条件，导致首跑（images.json 还不存在）时拦截失效，
-    # 缺图直接漏进渲染。这里直接测函数本身的契约：images.json 不存在时
+    # 17. run._image_coverage：缺图拦截的判定核心（回归防护——若外层多套
+    # 一个 has_images 条件，首跑时 images.json 还不存在，拦截会失效、缺图
+    # 直接漏进渲染。这里直接测函数本身的契约：images.json 不存在时
     # 全部 news/seg 段落都算 missing，而不是被跳过。）
     from run import _image_coverage
 
     with tempfile.TemporaryDirectory() as td:
+        # fixture 走 load_timing_manifest 契约校验，必须长得像 pipeline 真
+        # 产出的 manifest（total_duration + 每段非空 sentences + 句子四字段
+        # 齐全）。以前只有 sentences/segments 两个字段时裸 json.load 能过，
+        # 换成契约加载器就炸——那是 fixture 不像真产物，不是被测代码的问题。
+        def _sent(i, text):
+            return {"index": i, "text": text, "start_time": float(i),
+                    "duration": 1.0}
+
         manifest_path = os.path.join(td, "timing_manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump({
-                "sentences": [{"index": 0, "text": "开场白。", "duration": 1.0}],
+                "total_duration": 5.0,
+                "sentences": [_sent(i, f"第{i}句。") for i in range(5)],
                 "segments": [
-                    {"id": "opening", "title": "本期内容"},
-                    {"id": "news1", "title": "第一条"},
-                    {"id": "news2", "title": "第二条"},
-                    {"id": "seg1", "title": "讲解段"},
-                    {"id": "closing", "title": "小结"},
+                    {"id": "opening", "title": "本期内容",
+                     "sentences": [_sent(0, "开场白。")]},
+                    {"id": "news1", "title": "第一条",
+                     "sentences": [_sent(1, "第一条内容。")]},
+                    {"id": "news2", "title": "第二条",
+                     "sentences": [_sent(2, "第二条内容。")]},
+                    {"id": "seg1", "title": "讲解段",
+                     "sentences": [_sent(3, "讲解内容。")]},
+                    {"id": "closing", "title": "小结",
+                     "sentences": [_sent(4, "小结内容。")]},
                 ],
             }, f, ensure_ascii=False)
 
@@ -1190,8 +1240,9 @@ def main():
         # 17d. manifest 没有 segments 字段：无配图义务
         bare_path = os.path.join(td, "bare_manifest.json")
         with open(bare_path, "w", encoding="utf-8") as f:
-            json.dump({"sentences": [{"index": 0, "text": "一句话。", "duration": 1.0}]}, f,
-                      ensure_ascii=False)
+            json.dump({"total_duration": 1.0, "sentences": [
+                {"index": 0, "text": "一句话。", "start_time": 0.0,
+                 "duration": 1.0}]}, f, ensure_ascii=False)
         sids, missing = _image_coverage(bare_path, images_json)
         check("run._image_coverage: manifest without segments -> no sids, no missing",
               sids == [] and missing == [], (sids, missing))
@@ -1228,6 +1279,94 @@ def main():
     _f3, _u3 = _filter_title_items(_ti, None)
     check("search_images._filter: no sids -> no filtering",
           _f3 == _ti and _u3 == [], (_f3, _u3))
+
+    # ── 17f. 外部 review 修复的回归防线 ──────────────────────────────
+    # 这组断言固化 2026-09 那轮深度 review 修掉的缺陷。每条都对应一个
+    # 真实故障场景，不是"看着该有"的形式化检查。
+    print("\n[17f] review-fix regression guards")
+    _skill_root17 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _src(name):
+        with open(os.path.join(_skill_root17, "scripts", name),
+                  encoding="utf-8") as _f:
+            return _f.read()
+
+    _run_src = _src("run.py")
+
+    # ① SKILL.md 曾把 --loudness 写在 run.py 参数表里，但 argparse 里根本
+    #   没有——照文档敲命令直接 unrecognized arguments。
+    check("run.py 实现了文档承诺的 --loudness",
+          '"--loudness"' in _run_src and "args.loudness is not None" in _run_src)
+
+    # ② check 步骤是裸 npx hyperframes（不经 render_watch 的 --max-wait），
+    #   Chrome 卡在 "Timed out closing browser" 时会永久阻塞且无日志。
+    check("check 步骤带墙钟上限（Chrome 挂死兜底）",
+          "timeout=CHECK_TIMEOUT" in _run_src
+          and "subprocess.TimeoutExpired" in _run_src)
+
+    # ③ TTS/配图并行阶段曾有 5Hz 无限轮询：子进程卡住时 run.py 既不退出
+    #   也不报错，终端看着"还在跑"。
+    check("并行阶段有整体 deadline",
+          "PARALLEL_TIMEOUT" in _run_src and "deadline = time.time()" in _run_src)
+
+    # ④ 被信号终止时 returncode 是负数，sys.exit(-15) 在 shell 显示成 241。
+    check("子进程退出码做了正数规范化",
+          "_norm_rc(fail_rc)" in _run_src)
+
+    # ⑤ --aspect both 期间被强杀会留下 *.html.disabled，下次运行直接 exit 1
+    #   且报错不提真正原因。
+    check("--aspect both 会自愈上次中断残留的 .disabled",
+          ".disabled" in _run_src and "已恢复上次中断残留的隔离文件" in _run_src)
+
+    # ⑥ 关键产物被打断写一半 → 截断 JSON。下游要么崩 traceback，要么更糟：
+    #   当有效缓存用。
+    check("production_report / render_cache 走原子写",
+          "_write_json_atomic" in _run_src)
+    _pipe_src = _src("pipeline.py")
+    check("timing_manifest.json 走原子写（tmp + os.replace）",
+          'manifest_path + ".tmp"' in _pipe_src and "os.replace(_tmp" in _pipe_src)
+    check("index.html 走原子写（tmp + os.replace）",
+          'output_path + ".tmp"' in _src("gen_hyperframes.py"))
+
+    # ⑦ 段落全部句子 TTS 失败时写出空 sentences，会被 _contracts 直接拒收
+    #   ——一次失败就让整条视频出不来。
+    check("pipeline 剔除无音频的空段落而不是写出坏 manifest",
+          "dropped.append(_seg_id)" in _pipe_src
+          and "已从 manifest 剔除" in _pipe_src)
+
+    # ⑧ 首句豁免行数预算：一句 300 字把预算打成负数、挤掉后续句子并溢出。
+    _bfs_src = _src("build_from_structured.py")
+    check("自动 body 的首句不再豁免行数预算",
+          "if not kept and budget > 0:" in _bfs_src
+          and "if kept and need > budget" not in _bfs_src)
+
+    # ⑨ export_extras 曾写死横屏切分参数，竖屏项目导出的 SRT 与片内字幕
+    #   切行不一致（本文件承诺"逐条对齐"）。
+    _exp_src17 = _src("export_extras.py")
+    check("export_extras 按画幅/字幕模式取切分参数",
+          '"--aspect"' in _exp_src17 and "aspect=args.aspect" in _exp_src17
+          and "subtitle_params_for(" in _exp_src17
+          and 'split_subtitle_cues(s["text"])' not in _exp_src17)
+
+    # ⑩ "哪些段落需要配图" 的 news/seg 前缀约定曾散落在 5 处、3 种写法
+    #   （startswith(元组) / 两个 or 串联 / 注释里复述），改命名规则要动 5
+    #   个地方且极易漏一处——漏的那处会静默改变配图覆盖率统计口径（把不该
+    #   算的算进去，或该配图的段落被跳过拦截）。已收口到 _contracts。
+    from _contracts import is_content_sid, CONTENT_SID_PREFIXES
+    check("is_content_sid 语义正确（内容段 vs 结构性段落）",
+          is_content_sid("news1") and is_content_sid("seg3")
+          and not is_content_sid("opening") and not is_content_sid("closing")
+          and not is_content_sid("") and not is_content_sid(None),
+          CONTENT_SID_PREFIXES)
+    _hardcoded = []
+    for _n in ("gen_hyperframes.py", "pipeline.py", "run.py", "_titles.py"):
+        _s = _src(_n)
+        for _pat in ('startswith(("news"', 'startswith("news") or',
+                     'startswith("news",'):
+            if _pat in _s:
+                _hardcoded.append(f"{_n}:{_pat}")
+    check("news/seg 前缀判定不再硬编码散落（统一走 is_content_sid）",
+          not _hardcoded, _hardcoded)
 
     # ── 18. 防回归断言（源码级固化）────────────────────────
     print("\n[18] anti-regression")
@@ -1266,16 +1405,16 @@ def main():
     _dead = [k for k in sorted(_lay_keys) if ('"%s"' % k) not in _gh_src]
     check("template layout keys all consumed by gen_hyperframes",
           not _dead, f"dead keys: {_dead}")
-    _am = _re.search(r"AGENDA_MAX = (\d+)", _gh_src)
-    check("AGENDA_MAX found in gen_hyperframes", _am is not None)
-    if _am:
-        _amax = int(_am.group(1))
-        _sm = max(_tpl["layout"][a]["agenda"]["shrinkMax"]
-                  for a in ("landscape", "vertical"))
-        check("template shrinkMax <= AGENDA_MAX", _sm <= _amax,
-              f"shrinkMax={_sm} AGENDA_MAX={_amax}")
+    # agenda 字号收缩刻度必须有序（shrinkThreshold <= shrinkMax，
+    # 相等 = 到达 shrinkMax 前不收缩，如竖屏模板 8/8），
+    # 否则线性插值区间为负、字号语义失效
+    _sm_mono = all(
+        _tpl["layout"][a]["agenda"]["shrinkThreshold"]
+        <= _tpl["layout"][a]["agenda"]["shrinkMax"]
+        for a in ("landscape", "vertical"))
+    check("template agenda shrinkThreshold <= shrinkMax", _sm_mono)
 
-    # 18c. images.json 的 autoplay 必须被 gen_hyperframes 消费（曾硬编码忽略）
+    # 18c. images.json 的 autoplay 必须被 gen_hyperframes 消费（防死字段复发）
     import tempfile as _tf
     import gen_hyperframes as _gh
     with _tf.TemporaryDirectory() as _td:
@@ -1335,10 +1474,10 @@ def main():
 
     _hex6 = _re.compile(r"#[0-9a-fA-F]{6}")
     # 3 位缩写展开（#fff == #ffffff）：dark 主题 text_color 就是 "#fff"，
-    # 不展开深浅判断静默失效（曾导致 dark 的 tagline 走压暗分支掉到 2.1）
+    # 不展开深浅判断静默失效（否则 dark 的 tagline 会走压暗分支、对比度掉到 2.1）
     check("_hex_to_rgb01 expands 3-digit hex",
           _hex_to_rgb01("#fff") == (1.0, 1.0, 1.0)
-          and _hex_to_rgb01("#4fc3f7") == _hex_to_rgb01("#4fc3f7"))
+          and _hex_to_rgb01("#4fc3f7") == (79 / 255, 195 / 255, 247 / 255))
     check("_hex_to_rgb01 rejects garbage",
           _hex_to_rgb01("#ff") is None
           and _hex_to_rgb01("not-a-color") is None)
@@ -1390,9 +1529,9 @@ def main():
                        {"dir": "b", "flow": False}]) == [])
 
     # ── 20a. main() 内不得局部 import math（真回归）────────
-    # pipeline.main() 里曾有一句函数内 import math，把 math 变成局部名，
-    # 导致更早执行的 gap 校验 UnboundLocalError（TTS 实跑才触发，
-    # selftest 不走 argparse 分支）。源码级断言：main 函数体内无 import math。
+    # 防回归：main() 内局部 import math 会把 math 变成局部名，导致更早
+    # 执行的 gap 校验 UnboundLocalError（TTS 路径才触发，selftest 不走
+    # argparse 分支）。源码级断言：main 函数体内无 import math。
     print("\n[20a] no local import math in main()")
     import ast as _ast
     with open(os.path.join(_skill_root, "scripts", "pipeline.py"),
@@ -1410,13 +1549,35 @@ def main():
     # ── 20b. 竖屏 cue 行宽必须按画幅收紧（cap22/slack1.0）───────────────
     # 竖屏 verse 物理行宽 ≈22 字（980px/40px）。若调用点回退到横屏默认
     # （28 字 + slack1.5 → 最长行 42 字），行数据会超物理宽度。
+    # 以前这条断言直接 grep 源码里的 `_sub_cap = 22 if aspect == "vertical"
+    # else 28` 字符串——那是"断言实现写法"，不是"断言行为"：把数值收口到
+    # 一个共用函数（等价重构）也会红，反而阻碍正常的去重。改成行为断言：
+    # 直接问共用函数要参数，再校验两个调用点确实接了这份参数。
+    from _script_utils import subtitle_params_for as _sub_params
+    _vp = _sub_params("vertical", "verse")
+    _lp = _sub_params("landscape", "bar")
+    check("vertical subtitle uses aspect-strict cap (22/1.0)",
+          (_vp["max_chars"], _vp["slack"], _vp["hard_cap"]) == (22, 1.0, 22)
+          and (_lp["max_chars"], _lp["slack"], _lp["hard_cap"]) == (28, 1.5, 34),
+          (_vp, _lp))
+
+    # 两个消费者必须共用同一份参数，否则"导出的 SRT 与片内字幕逐条对齐"
+    # 这个承诺会悄悄失效（竖屏/verse 下切行不同）。这是参数收口的回归
+    # 防线——比逐行 grep 数值更抗重构。
     with open(os.path.join(_skill_root, "scripts", "gen_hyperframes.py"),
               encoding="utf-8") as _gf:
         _gen_src = _gf.read()
-    check("vertical subtitle uses aspect-strict cap (22/1.0)",
-          '_sub_cap = 22 if aspect == "vertical" else 28' in _gen_src
-          and '_sub_slack = 1.0 if aspect == "vertical" else 1.5' in _gen_src
-          and "slack=_sub_slack" in _gen_src)
+    with open(os.path.join(_skill_root, "scripts", "export_extras.py"),
+              encoding="utf-8") as _ef:
+        _exp_src = _ef.read()
+    check("gen_hyperframes 与 export_extras 都从 subtitle_params_for 取参数",
+          "subtitle_params_for(" in _gen_src
+          and "subtitle_params_for(" in _exp_src
+          and "split_subtitle_cues(" in _exp_src,
+          (("subtitle_params_for(" in _gen_src),
+           ("subtitle_params_for(" in _exp_src)))
+    check("export_extras 已不依赖 split_subtitle_cues 的横屏默认值",
+          "split_subtitle_cues(s[\"text\"])" not in _exp_src)
 
     # ── 20c. 竖屏 verse 句子流结构与滚动参照系 ───────────────
     # verse-clip 无定位时 verse-line.offsetTop 相对
@@ -1482,17 +1643,20 @@ def main():
           and ('#opening .verse,#closing .verse{position:absolute;'
                'left:50px;bottom:60px;width:870px}' in _lhtml)
           and 'style="width:870px;margin:' in _lhtml)
-    # 有图段 title-wrap 是全宽 1760（标题横跨正文与图片上方），verse 必须
-    # 显式钉 870——width:100% 会继承全宽、长句右半截滑到图片底下被遮
-    # （layout 检查器以 text_occluded 暴露）。_vman 只有无图段，另造
-    # 带图 manifest 断言 has-image 分支；两分支都不允许内联 width:100%。
+    # 有图段的 verse 是独立绝对定位盒（与 body 卡同锚点/同宽推导，
+    # 不进 title-wrap 文档流）：_vman 无 flow 键 → badge 版式，左缘
+    # 205，宽度 = 图片左缘 1010 − 205 − 50 间距 = 755（固定 870 会让
+    # 右缘 1075 压进图片区）。无图段保持流内居中（870 全宽居中版式）。
+    # 两分支都不允许内联 width:100%（继承 title-wrap 全宽、长句右半截
+    # 滑到图片底下被遮，layout 检查器以 text_occluded 暴露）。
     _limhtml = _gh2.generate_html(_vman, "audio/combined.wav",
                                   sub_mode="verse",
                                   images={"seg1": {"src": "images/x.jpg"}})
-    check("landscape verse: window pinned to body column width "
-          "(has-image 870 / no-image 870 centered)",
+    check("landscape verse: detached window pinned to body column "
+          "(has-image 755 left-anchored / no-image 870 centered)",
           'style="width:870px;margin:' in _lhtml
-          and 'style="width:870px;margin-top:' in _limhtml
+          and f'style="position:absolute;left:205px;top:{_tpl["layout"]["landscape"]["body"]["top"]}px;'
+          'width:755px"' in _limhtml
           and 'style="width:100%' not in _lhtml
           and 'style="width:100%' not in _limhtml)
     check("landscape verse: open/close group centered above verse window",
@@ -1504,6 +1668,120 @@ def main():
           "vertical has-image)",
           '(aspect == "landscape" and not _is_oc)' in _gen_src
           and '(aspect == "vertical" and has_image)' in _gen_src)
+
+    # ── 20c2. 横屏图片框上边缘在标题带之下（长标题不遮挡图片）────────
+    # 图片槽 top/height 由标题带推导：上边缘 200 = topNews 80 + 1 行标题
+    # （fontSizeNewsImage 72 × titleLineHeight 1.25 = 90）+ 30px 间距——
+    # 单行标题完整避开；两行标题的第二行（y 170-260）只许横向停在图片
+    # 左缘（1010）以左，估算伸入图片区时生成期告警。下边缘 900 =
+    # 1080 − subtitle.height 176 − 4（字幕条上缘 904 之上 4px 间隙，
+    # 不与字幕条重叠）→ 高 700、中线 550。改标题字号/行高/间距时必须
+    # 同步重推模板 image 值，否则单行标题会压回图片上。
+    _tl_l = _tpl["layout"]["landscape"]["title"]
+    _img_l = _tpl["layout"]["landscape"]["image"]
+    _band_bottom = (_tl_l["topNews"]
+                    + round(_tl_l["fontSizeNewsImage"] * 1.25) + 30)
+    check("landscape image top edge = 1-line title band bottom",
+          _img_l["top"] - _img_l["height"] / 2 == _band_bottom,
+          f"top_edge={_img_l['top'] - _img_l['height'] / 2} "
+          f"band_bottom={_band_bottom}")
+    check("landscape image bottom clears subtitle bar (4px gap)",
+          _img_l["top"] + _img_l["height"] / 2
+          == 1080 - _tpl["layout"]["landscape"]["subtitle"]["height"] - 4)
+    check("landscape title.topImageCenter removed (centering branch gone)",
+          "topImageCenter" not in _tl_l
+          and "topImageCenter" not in _gen_src)
+    # 带图横屏 HTML 落位：图片槽 top:550/height:700（上边缘 200），
+    # 标题顶部锚定 topNews 80（无 translateY 居中）
+    check("landscape image slot pinned below title band "
+          "(top:550px height:700px)",
+          "top:550px" in _limhtml and "height:700px" in _limhtml
+          and "width:860px" in _limhtml)
+    check("landscape image segment title top-anchored at topNews "
+          "(no vertical centering)",
+          'left:205px;right:auto;width:1605px;top:80px' in _limhtml
+          and "top:46%" not in _limhtml)
+    # 超长标题（第二行伸入图片区 / 3 行以上）生成时告警，避免静默压图
+    check("landscape title whose 2nd line reaches image zone warns "
+          "at generation time",
+          "_est_w > _tw_px + _l2_safe" in _gen_src)
+
+    # ── 20c3. 横屏配图段内容框独立于标题框 ─────────────────────────
+    # 标题框（title-wrap）与内容框（body 卡 / verse 窗口）不用同一容器
+    # 约束：body 卡是独立绝对定位盒，锚定模板 body.top = 标题组最坏
+    # 情况（2 行标题 y 260 + tagline 槽 marginTop 16 + 44×1.4≈62 =
+    # y 338）之下 30px = 368——位置不随标题折 1 行还是 2 行浮动；
+    # tagline 是标题组固定成员、必须计入锚点（漏算会让 tagline 压进
+    # body 卡，layout 检查器以 content_overlap 暴露）；
+    # 宽度 = 图片左缘 − 左缘 − 50px 间距 与 maxWidth 取小（badge 版式
+    # 左缘 205 → 755；flow 版式左缘 50 → 870，右缘 920 距图片左缘
+    # 1010 留 90px）。挂载点必须是 seg-card 直接子元素（挂 title-wrap
+    # 里会以它为定位参照系，top 被二次偏移）。
+    _bd_l = _tpl["layout"]["landscape"]["body"]
+    _tgl_l = _tpl["layout"]["landscape"]["tagline"]
+    check("landscape body.top = title-group worst case (2-line title "
+          "+ tagline slot) + 30px",
+          _bd_l.get("top")
+          == _tl_l["topNews"]
+          + 2 * round(_tl_l["fontSizeNewsImage"] * 1.25)
+          + _tgl_l["marginTop"]
+          + round(_tgl_l["fontSize"] * _tgl_l["lineHeight"]) + 30,
+          f"body.top={_bd_l.get('top')}")
+    check("landscape tagline has explicit lineHeight (deterministic "
+          "slot height for body.top derivation)",
+          "lineHeight" in _tgl_l and isinstance(_tgl_l["lineHeight"],
+                                                (int, float)))
+    _bimg_l = 1920 - _img_l["right"] - _img_l["width"]
+    _w_badge = min(_bd_l["maxWidth"], _bimg_l - _tl_l["leftWithBadge"] - 50)
+    _w_flow = min(_bd_l["maxWidth"], _bimg_l - 50 - 50)
+    _bman = {
+        "total_duration": 9.0,
+        "sentences": [
+            {"index": 0, "text": "短句。", "start_time": 0.0,
+             "duration": 3.0},
+            {"index": 1, "text": "另起短句。", "start_time": 3.0,
+             "duration": 3.0},
+            {"index": 2, "text": "第三短句。", "start_time": 6.0,
+             "duration": 3.0},
+        ],
+        "segments": [
+            {"id": "seg1", "title": "短标题", "tagline": "",
+             "body": "第一行要点\n第二行要点",
+             "sentences": [
+                 {"index": 0, "text": "短句。", "start_time": 0.0,
+                  "duration": 3.0},
+                 {"index": 1, "text": "另起短句。", "start_time": 3.0,
+                  "duration": 3.0},
+                 {"index": 2, "text": "第三短句。", "start_time": 6.0,
+                  "duration": 3.0}]},
+        ],
+    }
+    # badge 版式（无 flow 键）：body 卡 left:205、宽 755、独立锚定
+    # body.top（tagline 为空也锚同一位置——锚点是标题组最坏情况的
+    # 固定值，不随段落内容浮动）
+    _btop = _bd_l["top"]
+    _bdh = _gh2.generate_html(_bman, "audio/combined.wav", sub_mode="bar",
+                              images={"seg1": {"src": "images/x.jpg"}})
+    check("landscape body card detached (absolute, left 205 / "
+          f"top {_btop} / width {_w_badge})",
+          f'style="position:absolute;left:205px;top:{_btop}px;'
+          f'width:{_w_badge}px;margin-top:0"' in _bdh)
+    # DOM 独立：body 卡在 title-wrap 之外（图片元素之后、seg-card 直挂）
+    check("landscape body card mounted outside title-wrap "
+          "(after seg-image in DOM)",
+          _bdh.find('class="seg-image"') < _bdh.find('id="body-seg1"')
+          and _bdh.find('class="seg-title-wrap"')
+          < _bdh.find('class="seg-image"'))
+    # flow 版式（无 badge）：左缘 50、宽 870、右缘 920 不压图片左缘 1010
+    _bman_flow = dict(_bman, flow=True)
+    _bfh = _gh2.generate_html(_bman_flow, "audio/combined.wav",
+                              sub_mode="bar",
+                              images={"seg1": {"src": "images/x.jpg"}})
+    check("landscape flow body card detached (left 50 / "
+          f"top {_btop} / width {_w_flow})",
+          f'style="position:absolute;left:50px;top:{_btop}px;'
+          f'width:{_w_flow}px;margin-top:0"' in _bfh
+          and 'class="badge"' not in _bfh)
 
     # ── 20d. bar 模式（经典形式）：仅横屏可用；竖屏家族 fail-fast ──
     _bhtml = _gh2.generate_html(_vman, "audio/combined.wav", sub_mode="bar")
@@ -1556,10 +1834,10 @@ def main():
     check("default: portrait resolves to verse (follows vertical family)",
           'class="verse"' in _def_p and 'class="sub-bar"' not in _def_p)
 
-    # ── 20b. timing_manifest segments 契约───────────────
+    # ── 20c. timing_manifest segments 契约（原 20b：与竖屏字幕节重号）──
     # gen_hyperframes 对 seg["sentences"] 直接下标访问，缺失时炸裸
-    # KeyError；契约层应先报对人（R3 手写 fixture 实测暴露的隐性必填）
-    print("\\n[20b] manifest segments contract")
+    # KeyError；契约层应先报对人（隐性必填，手写 fixture 易踩）
+    print("\n[20c] manifest segments contract")
     from _contracts import validate_timing_manifest as _vtm
     _ok_base = {"total_duration": 10.0,
                 "sentences": [{"index": 0, "text": "a。",
@@ -1782,12 +2060,14 @@ def main():
           ' else "verse")' in _run22)
     # 22e2 both 的 check 轮换隔离（hyperframes check 对项目里两个根
     # composition 报 multiple_root_compositions；selftest 不真跑全管线，
-    # 这里断言隔离/恢复机制的关键行存在）
+    # 这里断言隔离/恢复机制的关键行存在——注意不要用 "try:" 这类几乎
+    # 恒真的子串撑门面，要断言具体行为语句）
     check("run.py: both check isolates each aspect (.disabled rename + restore)",
-          ".disabled" in _run22
-          and "try:" in _run22
+          'os.replace(html_path, html_path + ".disabled")' in _run22
+          and 'os.replace(html_path + ".disabled", html_path)' in _run22
           and "_keep_snapshots(\"landscape\")" in _run22
           and "_keep_snapshots(\"vertical\")" in _run22
+          and "index.vertical.html" in _run22
           and 'args.aspect == "both"' in _run22)
 
     # 22f 字幕 DOM 逻辑按模式隔离：verse 输出不含 sub-bar 相关 JS/DOM
@@ -1806,6 +2086,1020 @@ def main():
         _gh22 = _f22.read()
     check("gen_hyperframes imports get_ffmpeg",
           "from _ffmpeg import get_ffmpeg" in _gh22)
+
+    # ── 23. 本轮修复的守护断言（英文断句 / .env 编码 / wrap_numbers /
+    # TTS fail-fast / WAV 样本精确时长 / sid+accent 契约）────────────
+    print("\n[23] review-fix guards")
+
+    # 23a 英文句终符：中英混合稿的英文句子能被切开，小数/缩写/省略号/
+    # 人名首字母不被误切；纯中文行为不变
+    s = split_sentences("OpenAI released GPT-5. It costs $20 per month. Really!")
+    check("en: ASCII .!? split mixed-content sentences",
+          s == ["OpenAI released GPT-5.", "It costs $20 per month.", "Really!"],
+          repr(s))
+    s = split_sentences("The U.S. market grew 3.5 percent, e.g. in Q1. Dr. Smith agrees.")
+    check("en: decimals/abbrevs/initials not over-split",
+          len(s) == 2 and s[0].startswith("The U.S.") and "3.5" in s[0]
+          and s[1].startswith("Dr."), repr(s))
+    s = split_sentences("他说要等一下...然后走了。")
+    check("en: ellipsis mid-text stays one sentence", len(s) == 1, repr(s))
+
+    # 23b _env 编码容错：UTF-16（PS5.1 重定向产物）与 GBK 的 .env 不再
+    # 裸栈，key 能正常解析出来
+    import tempfile as _tmp23
+    from _env import _parse_env_file
+    with _tmp23.TemporaryDirectory() as _td23:
+        _p16 = os.path.join(_td23, "utf16.env")
+        with open(_p16, "wb") as f:
+            f.write(b"\xff\xfe" + "MIMO_API_KEY=sk-u16\n".encode("utf-16-le"))
+        r16 = None
+        try:
+            r16 = _parse_env_file(_p16)
+        except Exception as e:
+            check("env: UTF-16 .env parsed (no crash)", False, repr(e))
+        check("env: UTF-16 .env key resolved",
+              r16 is not None and r16.get("MIMO_API_KEY") == "sk-u16", r16)
+        _pgbk = os.path.join(_td23, "gbk.env")
+        with open(_pgbk, "wb") as f:
+            f.write("# 注释\nMIMO_API_KEY=sk-gbk\n".encode("gb18030"))
+        rgbk = None
+        try:
+            rgbk = _parse_env_file(_pgbk)
+        except Exception as e:
+            check("env: GBK .env parsed (no crash)", False, repr(e))
+        check("env: GBK .env key resolved",
+              rgbk is not None and rgbk.get("MIMO_API_KEY") == "sk-gbk", rgbk)
+
+    _tdir23 = tempfile.TemporaryDirectory()
+    _tmpdir = _tdir23.name
+
+    # 23c wrap_numbers：esc() 产生的数字字符引用（&#39;）里的数字不被误包，
+    # 正常文本里的数字照常包裹
+    from gen_hyperframes import esc, wrap_numbers
+    wrapped = wrap_numbers(esc("Apple's 5G chip costs $399"), "#4fc3f7")
+    check("wrap_numbers skips numeric char refs",
+          "&#<span" not in wrapped and "<span" in wrapped
+          and ">39</span>" not in wrapped, wrapped)
+    check("wrap_numbers still wraps plain numbers",
+          '<span class="num-accent"' in wrap_numbers("增长15亿", "#4fc3f7"))
+
+    # 23d _tts 无音频响应 fail-fast：BadAudioResponseError 归为确定性失败
+    from _tts import BadAudioResponseError, _is_non_retryable
+    check("tts: bad audio response is non-retryable",
+          _is_non_retryable(BadAudioResponseError("no audio")))
+    class _FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_kw):
+                    import types
+                    msg = types.SimpleNamespace(audio=None)
+                    return types.SimpleNamespace(
+                        choices=[types.SimpleNamespace(message=msg)])
+    _synth_ok, _spd = synth_sentence(_FakeClient(), "测试。", "冰糖",
+                                     "", os.path.join(_tmpdir, "tts_badresp.wav"),
+                                     max_retries=3)
+    check("tts: audio-less response gives up without retries", _synth_ok is False)
+
+    # 23e WAV 时长样本精确：wave 可读的文件不再有 10ms 量化误差
+    from _audio import measure_duration, _wav_duration
+    _probe = os.path.join(_tmpdir, "dur_probe.wav")
+    import wave as _w23
+    with _w23.open(_probe, "wb") as _wf23:
+        _wf23.setnchannels(1)
+        _wf23.setsampwidth(2)
+        _wf23.setframerate(24000)
+        _wf23.writeframes(b"\x00\x00" * 24001)  # 恰好 1.000041666..s
+    _exact = 24001 / 24000.0
+    check("wav duration is sample-accurate (not 10ms quantized)",
+          abs(measure_duration("ffmpeg", _probe) - _exact) < 1e-9,
+          measure_duration("ffmpeg", _probe))
+    check("_wav_duration returns None for non-wav",
+          _wav_duration(os.path.join(HERE, "preview.js")) is None)
+
+    # 23f 契约层：坏 sid / 坏 accent hex 在进管线前报错
+    from _contracts import validate_timing_manifest as _vtm23
+    _base_m23 = {"sentences": [{"index": 0, "text": "好。", "start_time": 0.0,
+                                "duration": 1.0}],
+                 "total_duration": 1.0}
+    for _bad_seg in (
+            {"id": 'seg"1', "sentences": [_base_m23["sentences"][0]]},
+            {"id": "seg;drop", "sentences": [_base_m23["sentences"][0]]},
+            {"id": "seg1", "accent": "#12345",
+             "sentences": [_base_m23["sentences"][0]]},
+    ):
+        try:
+            m = dict(_base_m23, segments=[_bad_seg])
+            _vtm23(m)
+            check("contract rejects bad sid/accent", False, repr(_bad_seg.get("id")))
+        except ValueError:
+            check("contract rejects bad sid/accent", True)
+    _dup = dict(_base_m23, segments=[
+        {"id": "seg1", "sentences": [_base_m23["sentences"][0]]},
+        {"id": "seg1", "accent": "#4fc3f7",
+         "sentences": [_base_m23["sentences"][0]]}])
+    try:
+        _vtm23(_dup)
+        check("contract rejects duplicate sid", False)
+    except ValueError:
+        check("contract rejects duplicate sid", True)
+    # 合法值不受影响：opening/seg1/closing 与合法 hex 照常通过
+    _ok = dict(_base_m23, segments=[
+        {"id": "seg1", "accent": "#4fc3f7",
+         "sentences": [_base_m23["sentences"][0]]}])
+    check("contract accepts valid sid + accent hex", _vtm23(_ok) is _ok)
+
+    # 23g 渲染流程优化：check 缓存命中/失效逻辑 + 成片复用键
+    import run as _runmod23
+    with _tmp23.TemporaryDirectory() as _td23g:
+        _html23 = os.path.join(_td23g, "index.html")
+        with open(_html23, "w", encoding="utf-8") as f:
+            f.write("<html>v1</html>")
+        _snaps23 = os.path.join(_td23g, "snapshots")
+        os.makedirs(_snaps23)
+        # 首次：无缓存 → miss
+        check("check cache: cold start misses",
+              not _runmod23._check_cache_hit(_td23g, _html23, _snaps23, False))
+        _runmod23._check_cache_put(_td23g, _html23, _snaps23)
+        # 写入后命中
+        check("check cache: hit after put",
+              _runmod23._check_cache_hit(_td23g, _html23, _snaps23, False))
+        # HTML 变化 → miss（任何影响画面的 gen 输入都落在 HTML 字节里）
+        with open(_html23, "a", encoding="utf-8") as f:
+            f.write("<!-- changed -->")
+        check("check cache: html change invalidates",
+              not _runmod23._check_cache_hit(_td23g, _html23, _snaps23, False))
+        _runmod23._check_cache_put(_td23g, _html23, _snaps23)
+        # 快照目录被删 → miss（防"删快照静默跳过审帧"）
+        shutil.rmtree(_snaps23)
+        check("check cache: missing snapshots dir invalidates",
+              not _runmod23._check_cache_hit(_td23g, _html23, _snaps23, False))
+        # force 无条件 miss
+        os.makedirs(_snaps23)
+        _runmod23._check_cache_put(_td23g, _html23, _snaps23)
+        check("check cache: --force-check always misses",
+              not _runmod23._check_cache_hit(_td23g, _html23, _snaps23, True))
+        # 成片复用键：HTML/manifest/参数任一变化键都变
+        class _A23:
+            fps, quality, workers, gpu = 24, "standard", 6, False
+        _m23f = os.path.join(_td23g, "m.json")
+        with open(_m23f, "w", encoding="utf-8") as f:
+            f.write("{}")
+        _k1 = _runmod23._render_cache_key(_html23, _m23f, _A23)
+        _k2 = _runmod23._render_cache_key(_html23, _m23f, _A23)
+        check("render cache key: stable for same inputs", _k1 == _k2)
+        with open(_html23, "a", encoding="utf-8") as f:
+            f.write("x")
+        check("render cache key: html change changes key",
+              _runmod23._render_cache_key(_html23, _m23f, _A23) != _k1)
+        with open(_html23, "w", encoding="utf-8") as f:
+            f.write("<html>v1</html>")
+        _A23.workers = 8
+        check("render cache key: workers change changes key",
+              _runmod23._render_cache_key(_html23, _m23f, _A23) != _k1)
+        # run.py 新旗标在位
+        with open(os.path.join(HERE, "run.py"), encoding="utf-8") as f:
+            _run_src23g = f.read()
+        check("run.py: --force-check / --reuse-render flags present",
+              "--force-check" in _run_src23g and "--reuse-render" in _run_src23g)
+        check("run.py: workers default bumped to 6",
+              '"--workers", type=int, default=6' in _run_src23g)
+
+        # ── 24. 产物不得落进技能目录 / 缺图提示按"有无候选"分流 ──────────
+        # 两条都是文档约定被机械化的防线，缺了会静默退化：
+        #   · 守卫没了 → 照抄文档示例命令就把 audio_output/、hf-project/
+        #     建在技能仓库里，污染仓库且多次制作串台；
+        #   · 分流没了 → --search-sids 部分路由场景下，对"从没搜过图"的
+        #     段落也提示 --pick，agent 会原地打转。
+        check("run.py: 技能目录污染守卫在位",
+              "_guard_not_in_skill_dir" in _run_src23g
+              and "SKILL_DIR" in _run_src23g)
+        check("run.py: 守卫只对非 dry-run 生效（dry-run 承诺不写文件）",
+              "if not args.dry_run:" in _run_src23g
+              and "_guard_not_in_skill_dir(" in _run_src23g)
+
+        _inside = _runmod23._is_inside(
+            os.path.join(_runmod23.SKILL_DIR, "audio_output"),
+            _runmod23.SKILL_DIR)
+        check("_is_inside: 技能目录内的产物路径被认出", _inside)
+        check("_is_inside: 技能目录外的产物路径放行",
+              not _runmod23._is_inside(os.path.join(_td23g, "audio_output"),
+                                       _runmod23.SKILL_DIR))
+        # 技能目录本身（相等）也要算"在内"
+        check("_is_inside: 路径等于技能目录时也判为在内",
+              _runmod23._is_inside(_runmod23.SKILL_DIR, _runmod23.SKILL_DIR))
+
+        # 缺图分流：seg1 有候选待 --pick，seg2/seg3 本轮没候选需走 B/C/D
+        _cj24 = os.path.join(_td23g, "candidates.json")
+        with open(_cj24, "w", encoding="utf-8") as f:
+            json.dump({"seg1": {"title": "A", "candidates": [
+                {"file": "seg1_cand1.jpg"}, {"file": "seg1_cand2.jpg"}]}}, f)
+        _pick, _nocand, _lines = _runmod23._split_missing_by_candidates(
+            ["seg1", "seg2", "seg3"], _cj24, os.path.join(_td23g, "images"))
+        check("缺图分流: 有候选的段落进 --pick 组", _pick == ["seg1"])
+        check("缺图分流: 无候选的段落进补图组", _nocand == ["seg2", "seg3"])
+        check("缺图分流: 候选行带 sid 与全路径",
+              len(_lines) == 1 and "seg1" in _lines[0]
+              and "seg1_cand1.jpg" in _lines[0])
+        # candidates.json 缺失/损坏 → 全部归入补图组，不臆造候选
+        _pick2, _nocand2, _lines2 = _runmod23._split_missing_by_candidates(
+            ["seg1"], os.path.join(_td23g, "nope.json"),
+            os.path.join(_td23g, "images"))
+        check("缺图分流: candidates.json 缺失时全归补图组",
+              _pick2 == [] and _nocand2 == ["seg1"] and _lines2 == [])
+        # 分流函数被 main 的缺图分支实际调用（防"加了函数没接线"）
+        check("run.py: 缺图分支调用了分流函数",
+              "_split_missing_by_candidates(" in _run_src23g)
+
+    # 25. 自进化闭环：Raw Layer（_trace）与 Wiki Layer 基建（_wiki_common）
+    # 全离线、零 API；所有写盘都落在临时目录，不在技能目录里留任何东西。
+    print("\n[25] 自进化闭环")
+    import tempfile as _tf25
+    import _trace as _tr25
+
+    def _read_src25(name):
+        with open(os.path.join(HERE, name), "r", encoding="utf-8") as f:
+            return f.read()
+
+    # ── 去敏：本模块对外承诺"不记录绝对路径/密钥"，这条必须机械保证 ──
+    check("_trace: scrub 抹掉 sk- 风格 key",
+          "<redacted>" in _tr25._scrub("MIMO_API_KEY=sk-abcdef1234567890abcd"))
+    check("_trace: scrub 抹掉 key: value 形态",
+          "<redacted>" in _tr25._scrub("api_key: sk-liveZZZZ9999xxxx"))
+    check("_trace: scrub 抹掉绝对路径只留末段",
+          _tr25._scrub("ffmpeg error at /home/alice/videos/out.mp4")
+          .endswith("<path>/out.mp4"))
+    check("_trace: scrub 不误伤普通 basename",
+          _tr25._scrub("script=pipeline.py") == "script=pipeline.py")
+
+    # ── 记录结构 ──
+    _rec25 = _tr25.build_record(
+        outcome="ok", params={"aspect": "landscape", "workers": 6},
+        stages=[{"name": "TTS", "seconds": 1.0, "ok": True}])
+    check("轨迹: 含 v/id/ts/outcome/env/params/stages/fallbacks 字段",
+          all(k in _rec25 for k in ("v", "id", "ts", "outcome", "env",
+                                    "params", "params_hash", "stages",
+                                    "fallbacks")))
+    check("轨迹: params_hash 与键顺序无关",
+          _tr25.params_hash({"a": 1, "b": 2}) == _tr25.params_hash({"b": 2, "a": 1}))
+    check("轨迹: 兜底信号能从 skipped 里反推出来",
+          "纯文字版兜底" in _tr25.build_record(
+              outcome="ok", skipped=["配图：无 Key，走纯文字版兜底"])["fallbacks"])
+    check("轨迹: 缺图会记成兜底信号",
+          any("缺图" in x for x in _tr25.build_record(
+              outcome="ok", images={"total": 8, "matched": 6,
+                                    "missing": 2})["fallbacks"]))
+
+    # ── 落盘 / 隐私：project_key 是加盐哈希，不是路径原文 ──
+    with _tf25.TemporaryDirectory() as _td25:
+        _old_env = os.environ.get("CTV_TRACE_DIR")
+        os.environ["CTV_TRACE_DIR"] = _td25
+        try:
+            _pk = _tr25.project_key(_td25)
+            _pk2 = _tr25.project_key(_td25)
+            check("轨迹: project_key 对同一项目稳定", _pk == _pk2 and bool(_pk))
+            check("轨迹: project_key 是哈希不是路径原文",
+                  bool(_pk) and len(_pk) == 12 and _pk not in _td25)
+            _p25 = _tr25.record_run(outcome="ok", params={"a": 1},
+                                    stages=[{"name": "TTS", "seconds": 0.1,
+                                             "ok": True}], project_path=_td25)
+            check("轨迹: record_run 落盘成功",
+                  _p25 is not None and os.path.isfile(_p25))
+            check("轨迹: 落盘内容可被读回",
+                  len(list(_tr25.iter_traces())) == 1)
+            # 剪枝：0 表示"不限制"（不是"清空"），超上限的按新旧滚动删除
+            for _i in range(3):
+                _tr25.write_record(_tr25.build_record(outcome="ok"))
+            check("轨迹: prune 上限 0 表示不限制（不删任何）",
+                  _tr25.prune(max_traces=0, max_age_days=0) == 0)
+            check("轨迹: dry-run 预告删除数但不真删",
+                  _tr25.prune(max_traces=1, max_age_days=0, dry_run=True) == 3
+                  and len(list(_tr25.iter_traces())) == 4)
+            check("轨迹: 真删按条数滚动到上限",
+                  _tr25.prune(max_traces=1, max_age_days=0) == 3
+                  and len(list(_tr25.iter_traces())) == 1)
+
+            # 自动剪枝：DEFAULT_MAX_TRACES 若只在"手动跑 prune"时才生效，那它
+            # 根本不是默认值——轨迹会无限增长。写盘路径自己必须兜住。
+            _orig_cap = _tr25.DEFAULT_MAX_TRACES
+            _tr25.DEFAULT_MAX_TRACES = 2
+            try:
+                for _i in range(5):
+                    _tr25.write_record(_tr25.build_record(outcome="ok"))
+                _left = len(list(_tr25.iter_traces()))
+                check("轨迹: 落盘自动剪枝，条数不超上限", _left == 2, _left)
+                check("轨迹: 自动剪枝保留的是最新的（本次刚写的还在）",
+                      any(_r.get("outcome") == "ok"
+                          for _p, _r in _tr25.iter_traces()))
+            finally:
+                _tr25.DEFAULT_MAX_TRACES = _orig_cap
+            # 剪枝抛异常也不能把落盘结果吞掉（旁路不得破坏主流程）
+            def _boom(*_a, **_k):
+                raise RuntimeError("boom")
+            _orig_prune = _tr25.prune
+            _tr25.prune = _boom
+            try:
+                _p_ok = _tr25.write_record(_tr25.build_record(outcome="ok"))
+                check("轨迹: 剪枝抛异常也不吞掉本次落盘",
+                      _p_ok is not None and os.path.isfile(_p_ok))
+            finally:
+                _tr25.prune = _orig_prune
+        finally:
+            if _old_env is None:
+                os.environ.pop("CTV_TRACE_DIR", None)
+            else:
+                os.environ["CTV_TRACE_DIR"] = _old_env
+
+    # ── Wiki Layer 契约 ──
+    _dev25 = os.path.join(os.path.dirname(HERE), "dev")
+    if _dev25 not in sys.path:
+        sys.path.insert(0, _dev25)
+    import _wiki_common as _W25
+
+    _okp, _errp, _metap = _W25.validate_pattern(
+        os.path.join(_W25.PATTERNS_DIR, "p01-python-version-fiction.md"))
+    check("wiki: 合法 pattern 通过契约", _okp and not _errp)
+    check("wiki: 合法 pattern 能解析出 type", _metap.get("type") == "failure")
+
+    with _tf25.TemporaryDirectory() as _td25b:
+        _bad25 = os.path.join(_td25b, "p99-broken.md")
+        with open(_bad25, "w", encoding="utf-8") as f:
+            f.write("---\nid: p99-broken\ntype: nonsense\n---\n"
+                    + "正文要足够长才能过最短长度门槛，" * 8)
+        _okb, _errb, _ = _W25.validate_pattern(_bad25)
+        check("wiki: 缺字段/非法枚举的 pattern 被拒",
+              (not _okb) and any("缺字段" in e or "非法" in e for e in _errb))
+
+        _bad25c = os.path.join(_td25b, "p98-other.md")
+        with open(_bad25c, "w", encoding="utf-8") as f:
+            f.write("---\nid: totally-different\ntype: failure\ntitle: t\n"
+                    "first_seen: 2026-08-31\nsource: s\nconfidence: high\n"
+                    "status: active\n---\n## 现象\n" + "x" * 100
+                    + "\n## 机制\n" + "y" * 100)
+        _okc, _errc, _ = _W25.validate_pattern(_bad25c)
+        check("wiki: id 与文件名不一致被拒",
+              (not _okc) and any("不一致" in e for e in _errc))
+
+        # ── 提议：单原子约束 ──
+        _tgt25 = os.path.join(_td25b, "doc.md")
+        with open(_tgt25, "w", encoding="utf-8") as f:
+            f.write("alpha AAA beta\nsecond AAA line\nunique BBB end\n")
+        _base25 = {"id": "t", "created": "2026-01-01T00:00:00+00:00",
+                   "pattern_refs": ["p01-python-version-fiction"],
+                   "rationale": "r", "expected_impact": "e"}
+
+        _dup = dict(_base25, target="doc.md", old="AAA", new="CCC")
+        _okd, _errd = _W25.validate_proposal(_dup, _td25b)
+        check("提议: old 出现多次 → 判不原子",
+              (not _okd) and any("唯一" in e for e in _errd))
+
+        _miss = dict(_base25, target="doc.md", old="NOT-THERE", new="X")
+        _okm, _errm = _W25.validate_proposal(_miss, _td25b)
+        check("提议: old 不存在 → 被拒",
+              (not _okm) and any("不存在" in e for e in _errm))
+
+        _prot = dict(_base25, target="dev/wiki/README.md", old="x", new="y")
+        _okpr, _errpr = _W25.validate_proposal(_prot, _td25b)
+        check("提议: 目标在 dev/wiki/ 保护路径 → 被拒",
+              (not _okpr) and any("保护路径" in e for e in _errpr))
+
+        _noref = dict(_base25, pattern_refs=[], target="doc.md",
+                      old="BBB", new="DDD")
+        _okn, _errn = _W25.validate_proposal(_noref, _td25b)
+        check("提议: pattern_refs 为空 → 被拒",
+              (not _okn) and any("不得为空" in e for e in _errn))
+
+        _badref = dict(_base25, pattern_refs=["no-such-pattern"],
+                       target="doc.md", old="BBB", new="DDD")
+        _okbr, _errbr = _W25.validate_proposal(_badref, _td25b)
+        check("提议: 引用不存在的 pattern → 被拒",
+              (not _okbr) and any("不存在" in e for e in _errbr))
+
+        _good = dict(_base25, target="doc.md", old="unique BBB end",
+                     new="unique DDD end")
+        _okg, _errg = _W25.validate_proposal(_good, _td25b)
+        check("提议: 单处唯一的合法改动 → 通过", _okg and not _errg)
+
+        # ── 路径归一化与越界防护 ──
+        # lstrip("./") 会把 .gitignore 削成 gitignore，快照静默变空、回滚报
+        # "还原 0 个文件"还装成功——安全网是空的。这条必须钉死。
+        check("提议: 路径归一化不吃掉 dotfile 的前导点",
+              _W25._norm_rel(".gitignore") == ".gitignore"
+              and _W25._norm_rel(".env.example") == ".env.example")
+        check("提议: 路径归一化仍会剥掉前导 ./",
+              _W25._norm_rel("./SKILL.md") == "SKILL.md"
+              and _W25._norm_rel("./a/b.md") == "a/b.md")
+
+        _esc = dict(_base25, target="../outside.md", old="x", new="y")
+        _oke, _erre = _W25.validate_proposal(_esc, _td25b)
+        check("提议: 目标含 ../ 穿越 → 被拒",
+              (not _oke) and any("穿越" in e for e in _erre))
+
+        _abs = dict(_base25, target="/etc/passwd", old="x", new="y")
+        _oka, _erra = _W25.validate_proposal(_abs, _td25b)
+        check("提议: 目标是绝对路径 → 被拒",
+              (not _oka) and any("绝对路径" in e or "穿越" in e for e in _erra))
+
+        check("提议: 危险路径判定覆盖 Windows 盘符与多级穿越",
+              _W25._is_unsafe_rel("C:/windows/win.ini")
+              and _W25._is_unsafe_rel("a/../../b.md")
+              and not _W25._is_unsafe_rel("references/internals.md"))
+
+        # ── 快照往返（指到临时目录，不在技能目录留文件）──
+        _orig_snap = _W25.SNAPSHOTS_DIR
+        try:
+            _W25.SNAPSHOTS_DIR = os.path.join(_td25b, "snaps")
+            _W25.snapshot(["doc.md"], "snap-25", _td25b)
+            with open(_tgt25, "w", encoding="utf-8") as f:
+                f.write("被后续操作覆盖了\n")
+            _n25 = _W25.restore("snap-25", _td25b)
+            with open(_tgt25, "r", encoding="utf-8") as f:
+                _restored = f.read()
+            check("快照: restore 返回还原文件数", _n25 == 1)
+            check("快照: 内容被完整还原",
+                  "alpha AAA beta" in _restored and "unique BBB end" in _restored)
+            check("快照: 不存在的快照 id 返回 None",
+                  _W25.restore("no-such-snap", _td25b) is None)
+
+            # dotfile 的快照往返：曾经因为路径归一化把 .gitignore 削成
+            # gitignore，快照静默记 0 个文件，回滚时报"还原 0 个"还装成功
+            _dot25 = os.path.join(_td25b, ".gitignore")
+            with open(_dot25, "w", encoding="utf-8") as f:
+                f.write("原始 dotfile 内容\n")
+            _W25.snapshot([".gitignore"], "snap-dot", _td25b)
+            with open(_dot25, "w", encoding="utf-8") as f:
+                f.write("被改坏了\n")
+            _nd = _W25.restore("snap-dot", _td25b)
+            with open(_dot25, "r", encoding="utf-8") as f:
+                _dot_back = f.read()
+            check("快照: dotfile 也能被快照（不再是空 manifest）", _nd == 1)
+            check("快照: dotfile 内容被还原到原路径",
+                  "原始 dotfile" in _dot_back and "被改坏了" not in _dot_back)
+            check("快照: 不会在同级多出一个被削掉点的文件",
+                  not os.path.exists(os.path.join(_td25b, "gitignore")))
+            # 快照源不存在必须抛错，不能静默留一份还原不了的空快照
+            try:
+                _W25.snapshot(["no-such-file.md"], "snap-bad", _td25b)
+                _raised = False
+            except FileNotFoundError:
+                _raised = True
+            check("快照: 源不存在时抛错而不是留空快照", _raised)
+        finally:
+            _W25.SNAPSHOTS_DIR = _orig_snap
+
+    # ── run.py 的轨迹旁路接线（防"加了模块没接线"）──
+    _rs25 = _read_src25("run.py")
+    check("run.py: 有 --no-trace 开关", '"--no-trace"' in _rs25)
+    check("run.py: atexit 钩子已注册", "atexit.register(_emit_trace)" in _rs25)
+    check("run.py: dry-run 与 --no-trace 都会关掉轨迹",
+          "(not args.dry_run) and (not args.no_trace)" in _rs25)
+    check("run.py: 正常收尾登记 ok", '_note_outcome("ok")' in _rs25)
+    check("run.py: 缺图拦截登记 missing_images",
+          '_note_outcome("missing_images"' in _rs25)
+    check("run.py: 步骤失败登记 step_failed",
+          '_note_outcome("step_failed"' in _rs25)
+    check("run.py: 各失败路径都记了 failure 详情",
+          _rs25.count('_note_outcome("step_failed"') >= 3)
+
+    # ── 门控口径：子脚本的真实明细数必须透传上来 ──
+    # 早先的实现只记"这个子进程过了"，于是摘要显示成 "selftest 1/1"——看着
+    # 像全局只跑了 1 项检查。这是伪装成信息的误导，必须钉住。
+    check("门控口径: 能取到子脚本自报的明细数",
+          _W25.parse_summary_totals(
+              "noise\n__SUMMARY_JSON__ "
+              + json.dumps({"passed": 443, "total": 443})) == (443, 443))
+    check("门控口径: 没有摘要时返回 (None, None) 而不是瞎猜",
+          _W25.parse_summary_totals("完全没有摘要行") == (None, None))
+    check("门控口径: 摘要里缺 passed/total 也返回 (None, None)",
+          _W25.parse_summary_totals('__SUMMARY_JSON__ {"ok": true}')
+          == (None, None))
+    check("门控口径: selftest 分组优先用子脚本明细",
+          _W25._count_group("selftest", [{"ok": True, "passed": 443,
+                                          "total": 443}]) == (443, 443))
+    check("门控口径: 子脚本没报明细时退回数条目",
+          _W25._count_group("selftest", [{"ok": True}]) == (1, 1))
+    check("门控口径: 红了也要如实显示明细",
+          _W25._count_group("selftest", [{"ok": False, "passed": 440,
+                                          "total": 443}]) == (440, 443))
+    check("门控口径: check 分组按条目数",
+          _W25._count_group("check", [{"ok": True}, {"ok": True},
+                                      {"ok": False}]) == (2, 3))
+
+    # check.py 必须真的把子脚本明细塞进自己的 results，否则上面全是空转
+    _cs25 = _read_src25(os.path.join("..", "dev", "check.py"))
+    check("check.py: 子进程结果带上了自报明细",
+          'entry["passed"], entry["total"] = p2, t2' in _cs25)
+    check("check.py: 明细解析与 _wiki_common 共用一份实现",
+          "from _wiki_common import parse_summary_totals" in _cs25)
+
+    # ── 阶段② Wiki Maintainer：蒸馏摘要 ──
+    # 这一环此前**零覆盖**，而门控照样报全绿——19/19 说的是"被测到的都过了"，
+    # 不是"都测到了"。下面这批断言就是补这个洞。
+    import wiki_maintain as _WM25
+
+    def _mk_trace25(i, outcome="step_failed", stage="render", rc=1, title="t",
+                    ph="h1", env=None, secs=12.3, fb=None, tail="x" * 300):
+        return {
+            "id": "T%d" % i, "ts": "2026-08-31T10:%02d:00+08:00" % i,
+            "outcome": outcome, "skill_version": "1.5.44",
+            "env": env or {"py": "3.11", "node": "22", "ffmpeg": "6.0",
+                           "h264_encoder": "libx264"},
+            "params": {"title": title, "aspect": "landscape"},
+            "params_hash": ph, "project_key": "pk", "stages": [],
+            "skipped": [], "fallbacks": fb or [], "images": {},
+            "failure": {"stage": stage, "rc": rc, "stderr_tail": tail},
+            "outputs": {}, "total_seconds": secs,
+        }
+
+    _t0, _nf0, _ns0 = _WM25.build_brief([])
+    check("蒸馏: 空输入不崩且如实报 0 条",
+          _nf0 == 0 and _ns0 == 0 and "本次纳入轨迹" in _t0, (_nf0, _ns0))
+
+    _t1, _nf1, _ns1 = _WM25.build_brief([
+        _mk_trace25(1, stage="render"), _mk_trace25(2, stage="render"),
+        _mk_trace25(3, stage="tts", rc=2)])
+    check("蒸馏: 同 (outcome,stage,rc) 合并成一簇", _nf1 == 2, _nf1)
+    check("蒸馏: 簇标题带出现次数",
+          "[2 次] outcome=step_failed stage=render" in _t1)
+    # 3 条轨迹、2 个簇，尾巴全同：去重是**簇内**去重，所以应剩 2 条而不是 3 条
+    check("蒸馏: 簇内相同的 stderr 尾巴只出现一次", _t1.count("x" * 300) == 2,
+          _t1.count("x" * 300))
+
+    _t2, _nf2, _ns2 = _WM25.build_brief(
+        [_mk_trace25(i, outcome="ok", ph="h%d" % (i % 2)) for i in range(4)])
+    check("蒸馏: 成功按 params_hash 聚类", _ns2 == 2, _ns2)
+
+    # WikiSkill 的有界性：≤5 失败簇 + ≤3 成功簇，取了上限要如实说
+    _many25 = ([_mk_trace25(i, stage="s%d" % i) for i in range(9)]
+               + [_mk_trace25(20 + i, outcome="ok", ph="ok%d" % i)
+                  for i in range(7)])
+    _t3, _nf3, _ns3 = _WM25.build_brief(_many25)
+    check("蒸馏: 失败簇不超过 WikiSkill 上限",
+          _nf3 == _W25.BRIEF_MAX_FAILURES, (_nf3, _W25.BRIEF_MAX_FAILURES))
+    check("蒸馏: 成功簇不超过 WikiSkill 上限",
+          _ns3 == _W25.BRIEF_MAX_SUCCESSES, (_ns3, _W25.BRIEF_MAX_SUCCESSES))
+    check("蒸馏: 头部如实写下自己受哪些上限约束",
+          "失败簇 ≤%d" % _W25.BRIEF_MAX_FAILURES in _t3
+          and "成功簇 ≤%d" % _W25.BRIEF_MAX_SUCCESSES in _t3)
+
+    # 单条上限的**粒度**：必须是"每条"，不是"整篇截一刀"。
+    # 以前 _truncate 只在 return 前对全文调一次，单条能悄悄超限，而头部还
+    # 写着"单条 ≤15000 字符"——读者会信。
+    _huge25 = _mk_trace25(9, title="很长的标题" * 5000)
+    _huge25["failure"]["stderr_tail"] = "y" * 3000
+    _t4, _nf4, _ns4 = _WM25.build_brief([_huge25, _mk_trace25(10, outcome="ok")])
+    _blocks4 = [b for b in _t4.split("### [") if b.strip()]
+    _mx4 = max(len(b) for b in _blocks4) if _blocks4 else 0
+    check("蒸馏: 单条不超 BRIEF_ITEM_MAX_CHARS",
+          _mx4 <= _W25.BRIEF_ITEM_MAX_CHARS, (_mx4, _W25.BRIEF_ITEM_MAX_CHARS))
+    check("蒸馏: 超限的长字段被截断而不是撑爆条目", "…[已达单条" in _t4, _mx4)
+    check("蒸馏: 截断后条目的可操作结论还在（没被从尾部砍掉）", "待回答" in _t4)
+    check("蒸馏: 每条都过 _truncate（不是只对整篇截一刀）",
+          'lines.append(_truncate("\\n".join(item)))'
+          in _read_src25(os.path.join("..", "dev", "wiki_maintain.py")))
+
+    # 跨环境归因前必须先看到这条警告，否则会把换环境当成改代码改坏了
+    _t5, _nf5, _ns5 = _WM25.build_brief([
+        _mk_trace25(1, env={"py": "3.8", "node": "18"}),
+        _mk_trace25(2, env={"py": "3.11", "node": "22"})])
+    check("蒸馏: 跨环境时给出环境指纹警告", "环境指纹发生变化" in _t5)
+    _t5b, _nf5b, _ns5b = _WM25.build_brief([
+        _mk_trace25(1, env={"py": "3.8"}), _mk_trace25(2, env={"py": "3.8"})])
+    check("蒸馏: 同环境不误报环境变化", "环境指纹发生变化" not in _t5b)
+
+    check("蒸馏: 中位数取偶数样本的均值", _WM25._median([1, 3]) == 2.0)
+    check("蒸馏: 中位数取奇数样本的中位", _WM25._median([1, 2, 9]) == 2)
+    check("蒸馏: 中位数空样本返回 None", _WM25._median([]) is None)
+
+    # ── 阶段③④ 的 CLI 本体 ──
+    # 覆盖率扫描发现：本次改造新增的 4 个脚本里，只有 _wiki_common 的**校验
+    # 函数**被测过，CLI 入口一个都没有。而 gate 是整个自进化闭环的安全网——
+    # 它自己没测试，等于安全网从没被检查过（见 patterns/p11）。
+    import io as _io25
+    import contextlib as _ctx25
+    import wiki_gate as _G25
+    import wiki_propose as _P25
+    import wiki_trace as _T25
+
+    class _Ns25(object):
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    def _quiet25(fn, *a, **kw):
+        """跑一个命令并吃掉它的输出——这些命令天生会打印给人看。
+
+        stdout 与 stderr **都要**接：这些 CLI 的错误与告警一律走 stderr，
+        只重定向 stdout 会把"回滚未生效"这类关键告警漏掉。
+        """
+        _b = _io25.StringIO()
+        with _ctx25.redirect_stdout(_b), _ctx25.redirect_stderr(_b):
+            _r = fn(*a, **kw)
+        return _r, _b.getvalue()
+
+    # ── 门控：回滚的三种结局必须分得清 ──
+    _rc_g1, _ = _quiet25(
+        _G25.cmd_rollback, _Ns25(proposal_id="no-such-snapshot-xyz"))
+    check("门控: 无快照的回滚被拒绝（不假装成功）",
+          _rc_g1 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g1)
+
+    with _tf25.TemporaryDirectory() as _td25:
+        _old_snap25, _old_logs25 = _W25.SNAPSHOTS_DIR, _W25.LOGS_MD
+        _W25.SNAPSHOTS_DIR = os.path.join(_td25, "snaps")
+        _snap25 = os.path.join(_W25.SNAPSHOTS_DIR, "empty-snap")
+        os.makedirs(_snap25)
+        _W25.write_json(os.path.join(_snap25, "manifest.json"),
+                        {"id": "empty-snap", "files": ["references/nope.md"]})
+        _log25 = os.path.join(_td25, "logs.md")
+        with open(_log25, "w", encoding="utf-8") as _f25:
+            _f25.write("# logs\n")
+        _W25.LOGS_MD = _log25
+        try:
+            _rc_g2, _out_g2 = _quiet25(
+                _G25.cmd_rollback, _Ns25(proposal_id="empty-snap"))
+            _logtxt25 = open(_log25, encoding="utf-8").read()
+        finally:
+            _W25.SNAPSHOTS_DIR, _W25.LOGS_MD = _old_snap25, _old_logs25
+    # 还原 0 个文件 = 安全网没兜住。报成功比不回滚更糟：人会以为回到原点了。
+    check("门控: 还原 0 个文件判为失败而不是成功",
+          _rc_g2 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g2)
+    check("门控: 还原 0 个时明说回滚未生效", "回滚未生效" in _out_g2, _out_g2[:60])
+    check("门控: 还原 0 个会写 rollback-failed 留痕",
+          "rollback-failed" in _logtxt25)
+
+    # 留痕失败不能推翻一次已经过闸的改动
+    with _tf25.TemporaryDirectory() as _td25:
+        _old_imp25 = _G25.IMPACT_MD
+        _nomark25 = os.path.join(_td25, "impact.md")
+        with open(_nomark25, "w", encoding="utf-8") as _f25:
+            _f25.write("# 缺 AUTO-ROWS-BELOW 标记\n")
+        try:
+            _G25.IMPACT_MD = _nomark25
+            _r_g3 = _G25._prepend_impact_row("| x |")
+            _G25.IMPACT_MD = os.path.join(_td25, "missing.md")
+            _r_g4 = _G25._prepend_impact_row("| x |")
+        finally:
+            _G25.IMPACT_MD = _old_imp25
+    check("门控: impact 缺标记/缺文件都只是跳过留痕，不崩",
+          _r_g3 is False and _r_g4 is False, (_r_g3, _r_g4))
+    check("门控: impact 行是 6 列表格行",
+          _G25._impact_row("2026-09-01", "1.5.44", "s", "p01", "19/19", "保留")
+          .count("|") == 7)
+
+    with _tf25.TemporaryDirectory() as _td25:
+        _pp25 = os.path.join(_td25, "p.json")
+        _W25.write_json(_pp25, {"id": "zz-test", "status": "rolled_back"})
+        _rc_g5, _ = _quiet25(_G25.cmd_apply, _Ns25(file=_pp25, gate=None))
+    check("门控: 已回滚/已应用的提案不允许再次应用",
+          _rc_g5 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g5)
+
+    # ── 提议者 CLI ──
+    _rc_p1, _out_p1 = _quiet25(
+        _P25.cmd_scaffold, _Ns25(from_pattern=["no-such-pattern"],
+                                 target=None, locator=None, risk="low",
+                                 gate="fast", out=None))
+    check("提议: 引用不存在的 pattern 时拒绝生成骨架", _rc_p1 == 1, _rc_p1)
+    check("提议: 拒绝时列出可选 pattern 而不是让人去翻目录",
+          "p01-python-version-fiction" in _out_p1)
+
+    with _tf25.TemporaryDirectory() as _td25:
+        _out_p2 = os.path.join(_td25, "scaffold.json")
+        _rc_p2, _ = _quiet25(
+            _P25.cmd_scaffold,
+            _Ns25(from_pattern=["s02-doc-drift-as-mechanical-gate"],
+                  target="SKILL.md", locator="第 1 行", risk="low",
+                  gate="fast", out=_out_p2))
+        # 落盘判定必须在 with 内做完——出了块临时目录就没了，isfile 恒为假
+        _scaffolded25 = os.path.isfile(_out_p2)
+        _sc25 = _W25.read_json(_out_p2)
+    # SKILL.md 里写的 `--scaffold ... -o out.json` 必须真的能用。p09 的教训：
+    # 我曾用只匹配长选项的 grep 判定 -o 不存在，据此改坏了一份正确的文档。
+    check("提议: -o 骨架落盘可用（SKILL.md 的示例不是空头支票）",
+          _rc_p2 == 0 and _scaffolded25)
+    check("提议: 骨架带上 pattern 上下文",
+          (_sc25.get("_pattern_context") or [{}])[0].get("id")
+          == "s02-doc-drift-as-mechanical-gate")
+    check("提议: 骨架的 TODO 占位过不了校验（提示还没写完）",
+          not _W25.validate_proposal(_sc25, _W25.SKILL_DIR)[0])
+
+    # 孵化 ↔ 复活：门控拒掉的案子不删，将来能复活
+    with _tf25.TemporaryDirectory() as _td25:
+        _oi25, _op25 = _P25.INCUBATING_DIR, _P25.PROPOSALS_DIR
+        _P25.INCUBATING_DIR = os.path.join(_td25, "incubating")
+        _P25.PROPOSALS_DIR = os.path.join(_td25, "proposals")
+        os.makedirs(_P25.PROPOSALS_DIR)
+        _rt25 = os.path.join(_P25.PROPOSALS_DIR, "x.json")
+        _W25.write_json(_rt25, {
+            "id": "rt-test", "created": "2026-09-01T00:00:00+08:00",
+            "status": "proposed",
+            "pattern_refs": ["s01-gate-injection-validation"],
+            "rationale": "r", "target": "SKILL.md", "locator": "l",
+            "old": "zzz-unique-token", "new": "yyy",
+            "expected_impact": "i", "risk": "low", "gate": "fast"})
+        try:
+            _rc_p3, _ = _quiet25(_P25.cmd_incubate,
+                                 _Ns25(file=_rt25, reason="方向对但时机不对"))
+            _inc25 = os.path.join(_P25.INCUBATING_DIR, "x.json")
+            check("提议: 被拒的案子转入孵化区而不是删掉",
+                  _rc_p3 == 0 and os.path.isfile(_inc25))
+            check("提议: 孵化时留下原因与状态",
+                  _W25.read_json(_inc25).get("status") == "incubating"
+                  and "时机不对" in _W25.read_json(_inc25).get(
+                      "incubate_reason", ""))
+            _rc_p4, _out_p4 = _quiet25(_P25.cmd_revive, _Ns25(file=_inc25))
+            check("提议: 孵化区的案子能复活回 proposals",
+                  os.path.isfile(_rt25))
+            check("提议: 复活后若校验不过会明说（目标文件可能已变）",
+                  _rc_p4 == 1 and "校验未通过" in _out_p4, _out_p4[:60])
+        finally:
+            _P25.INCUBATING_DIR, _P25.PROPOSALS_DIR = _oi25, _op25
+
+    # ── Raw Layer CLI ──
+    with _tf25.TemporaryDirectory() as _td25, \
+            _tf25.TemporaryDirectory() as _td25b:
+        _old_env25 = os.environ.get("CTV_TRACE_DIR")
+        _old_mk25 = _T25.MARKER
+        os.environ["CTV_TRACE_DIR"] = _td25
+        _T25.MARKER = os.path.join(_td25b, ".last_maintained")
+        try:
+            _rc_t1, _out_t1 = _quiet25(_T25.cmd_stats, _Ns25())
+            check("轨迹 CLI: 空目录的 stats 给提示而不是崩",
+                  _rc_t1 == 0 and "暂无轨迹" in _out_t1, _out_t1[:40])
+
+            # ts 显式钉死在过去：否则"标记前后的归属"取决于测试跑得够不够快
+            _okrec25 = _tr25.build_record(
+                "ok", params={"aspect": "landscape"}, total_seconds=9.0)
+            _okrec25["ts"] = "2020-01-01T00:00:00+08:00"
+            _tr25.write_record(_okrec25)
+            _failed25 = _tr25.build_record(
+                "step_failed", params={"aspect": "vertical"},
+                failure={"stage": "render", "rc": 1, "stderr_tail": "boom"},
+                total_seconds=3.0)
+            _failed25["ts"] = "2020-01-01T00:00:01+08:00"
+            _tr25.write_record(_failed25)
+
+            _rc_t2, _out_t2 = _quiet25(_T25.cmd_stats, _Ns25())
+            check("轨迹 CLI: stats 分得清成败结局",
+                  "step_failed" in _out_t2 and "render" in _out_t2)
+            _rc_t3, _out_t3 = _quiet25(
+                _T25.cmd_list, _Ns25(outcome="step_failed", limit=10,
+                                     since_last=False))
+            check("轨迹 CLI: list --outcome 只筛出匹配的",
+                  "共 1 条" in _out_t3, _out_t3[-24:])
+            _rc_t4, _out_t4 = _quiet25(
+                _T25.cmd_show, _Ns25(trace_id=_failed25["id"]))
+            check("轨迹 CLI: show 按 id 取回单条", '"boom"' in _out_t4)
+
+            # 导出 → 导入 往返：id 必须保住，否则等于丢了主键
+            _jl25 = os.path.join(_td25b, "traces.jsonl")
+            _rc_t5, _out_t5 = _quiet25(_T25.cmd_export, _Ns25(out=_jl25))
+            check("轨迹 CLI: export 导出条数如实", "已导出 2 条" in _out_t5,
+                  _out_t5[:40])
+            os.environ["CTV_TRACE_DIR"] = _td25b + "_roundtrip"
+            _rc_t6, _out_t6 = _quiet25(_T25.cmd_import,
+                                       _Ns25(from_file=_jl25))
+            check("轨迹 CLI: import 导入条数如实", "已导入 2 条" in _out_t6,
+                  _out_t6[:40])
+            _ids25 = [r.get("id") for _p, r in _tr25.iter_traces()]
+            check("轨迹 CLI: 导出再导入后 id 不丢（往返无损）",
+                  _failed25["id"] in _ids25, _ids25)
+
+            # mark-maintained + --since-last：蒸馏的进度标记
+            os.environ["CTV_TRACE_DIR"] = _td25
+            _rc_t7, _ = _quiet25(_T25.cmd_mark, _Ns25())
+            check("轨迹 CLI: mark-maintained 落下标记文件",
+                  _rc_t7 == 0 and os.path.isfile(_T25.MARKER))
+            _rc_t8, _out_t8 = _quiet25(
+                _T25.cmd_list, _Ns25(outcome=None, limit=None,
+                                     since_last=True))
+            # 0 条时 cmd_list 走的是"没有匹配的轨迹"这条分支，不打"共 0 条"
+            check("轨迹 CLI: --since-last 过滤掉标记之前的轨迹",
+                  "没有匹配的轨迹" in _out_t8, _out_t8[-30:])
+            _rc_t9, _out_t9 = _quiet25(
+                _T25.cmd_prune, _Ns25(max=0, older_than_days=180,
+                                      dry_run=True))
+            check("轨迹 CLI: prune --max 0 表示不限制（dry-run 也不删）",
+                  "将删除 0 条" in _out_t9, _out_t9[:40])
+        finally:
+            if _old_env25 is None:
+                os.environ.pop("CTV_TRACE_DIR", None)
+            else:
+                os.environ["CTV_TRACE_DIR"] = _old_env25
+            _T25.MARKER = _old_mk25
+
+    # ── 分界时间的时区处理 ──
+    # 轨迹的 ts 是 `astimezone().isoformat()`（**带时区**），而标记的 mtime 用
+    # `fromtimestamp()` 取出来是**朴素**时间，两者一比就抛 TypeError。这段逻辑
+    # 原先在两个 CLI 里各写一遍：wiki_trace 直接崩，wiki_maintain 被
+    # `except (ValueError, TypeError)` 吞掉，于是 `--since-last` **静默退化成
+    # 不过滤**——比崩溃更难发现。现在统一走 _wiki_common（见 patterns/p12）。
+    _ts_a25 = _W25.parse_trace_ts("2026-08-31T10:00:00+08:00")
+    check("分界: 带时区的 ts 解析后仍是 aware",
+          _ts_a25 is not None and _ts_a25.tzinfo is not None, _ts_a25)
+    _ts_n25 = _W25.parse_trace_ts("2026-08-31T10:00:00")
+    check("分界: 朴素的 ts 会被补上时区（否则没法跟标记比）",
+          _ts_n25 is not None and _ts_n25.tzinfo is not None, _ts_n25)
+    check("分界: 解析不了的时间返回 None 而不是抛",
+          _W25.parse_trace_ts("not-a-time") is None
+          and _W25.parse_trace_ts(None) is None)
+    check("分界: 标记不存在时返回 None（不做过滤）",
+          _W25.marker_cutoff("/nonexistent/.last_maintained") is None)
+
+    with _tf25.TemporaryDirectory() as _td25:
+        _mkf25 = os.path.join(_td25, ".last_maintained")
+        with open(_mkf25, "w", encoding="utf-8") as _f25:
+            _f25.write("{}")
+        _cut25 = _W25.marker_cutoff(_mkf25)
+        check("分界: 标记 mtime 取出来是 aware",
+              _cut25 is not None and _cut25.tzinfo is not None, _cut25)
+        try:
+            _cmp25 = (_W25.parse_trace_ts("2026-08-31T10:00:00+08:00")
+                      < _cut25)
+        except TypeError as _e25:
+            _cmp25 = "TypeError: %s" % _e25
+        check("分界: 带时区的 ts 与标记 mtime 可比（不抛 TypeError）",
+              isinstance(_cmp25, bool), _cmp25)
+
+    # 行为回归：光"不崩"不够，必须真的过滤——静默不过滤正是原来的失败形态
+    with _tf25.TemporaryDirectory() as _td25, \
+            _tf25.TemporaryDirectory() as _td25b:
+        _oe25 = os.environ.get("CTV_TRACE_DIR")
+        _otr25, _omk25 = _T25.MARKER, _WM25.MARKER
+        os.environ["CTV_TRACE_DIR"] = _td25
+        _T25.MARKER = _WM25.MARKER = os.path.join(_td25b, ".last_maintained")
+        try:
+            _oldrec25 = _tr25.build_record("ok", params={"a": 1})
+            _oldrec25["ts"] = "2020-01-01T00:00:00+08:00"
+            _tr25.write_record(_oldrec25)
+            _quiet25(_T25.cmd_mark, _Ns25())          # 打标记
+            _newrec25 = _tr25.build_record("ok", params={"a": 2})
+            _tr25.write_record(_newrec25)             # 标记之后才发生
+
+            _kept25 = _WM25._collect(True)
+            check("分界: --since-last 只留下标记之后的轨迹",
+                  len(_kept25) == 1
+                  and _kept25[0].get("id") == _newrec25["id"],
+                  [r.get("id") for r in _kept25])
+            check("分界: 不带 --since-last 时全部纳入",
+                  len(_WM25._collect(False)) == 2)
+            _rc_l25, _out_l25 = _quiet25(
+                _T25.cmd_list, _Ns25(outcome=None, limit=None,
+                                     since_last=True))
+            check("分界: wiki_trace --since-last 不再因时区崩",
+                  _rc_l25 == 0 and "共 1 条" in _out_l25, _out_l25[-24:])
+        finally:
+            if _oe25 is None:
+                os.environ.pop("CTV_TRACE_DIR", None)
+            else:
+                os.environ["CTV_TRACE_DIR"] = _oe25
+            _T25.MARKER, _WM25.MARKER = _otr25, _omk25
+
+    # ── 收尾：覆盖率扫描剩下的两个既有模块也补上 ──
+    # 它俩都在本次改造之前就存在，但"零覆盖"这条结论同样成立。扫描报出来是
+    # 线索，既然扫到了就没理由绕过去（见 patterns/p11）。
+    import urllib.request as _urlreq25
+    import run_eval as _RE25
+    import _assets as _AS25
+
+    # ── run_eval.py：只测不需要真实 ffmpeg / 网络的确定性部分 ──
+    check("run_eval: segments 条数在区间内判过",
+          _RE25.check_segment_count({"segments": [{}] * 6}) == (True, 6))
+    check("run_eval: 条数低于下限判不过（含边界 4）",
+          _RE25.check_segment_count({"segments": [{}] * 4}) == (False, 4))
+    check("run_eval: 条数高于上限判不过（含边界 9）",
+          _RE25.check_segment_count({"segments": [{}] * 9}) == (False, 9))
+    check("run_eval: 空 segments 判不过且如实报 0",
+          _RE25.check_segment_count({}) == (False, 0))
+    check("run_eval: 区间可自定义",
+          _RE25.check_segment_count({"segments": [{}] * 3},
+                                    expect_range=(3, 3)) == (True, 3))
+
+    # check/skip 写的是模块级 RESULTS/SKIPPED，测完必须还原
+    _ores25, _oskip25 = _RE25.RESULTS, _RE25.SKIPPED
+    try:
+        _RE25.RESULTS, _RE25.SKIPPED = [], []
+        _quiet25(_RE25.check, "x", True)
+        _quiet25(_RE25.check, "y", False, "细节")
+        _quiet25(_RE25.skip, "z", "本机缺编码器")
+        check("run_eval: check/skip 分得清通过、失败与环境跳过",
+              _RE25.RESULTS == [("x", True), ("y", False)]
+              and _RE25.SKIPPED == [("z", "本机缺编码器")],
+              (_RE25.RESULTS, _RE25.SKIPPED))
+    finally:
+        _RE25.RESULTS, _RE25.SKIPPED = _ores25, _oskip25
+
+    # pick_h264_encoder：用假 ffmpeg 替身，免得依赖本机装了哪些编码器
+    def _fake_ffmpeg25(body, tmpdir):
+        """造一个只打印编码器清单的假 ffmpeg（该函数只解析 stdout）。"""
+        p = os.path.join(tmpdir, "fake_ffmpeg.sh")
+        with open(p, "w", encoding="utf-8") as _f25:
+            _f25.write("#!/bin/sh\necho '%s'\n" % body)
+        os.chmod(p, 0o755)
+        return p
+
+    with _tf25.TemporaryDirectory() as _td25:
+        check("run_eval: 挑到本机唯一可用的 h264 编码器",
+              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+                  " V..... libopenh264  OpenH264 H.264 encoder ", _td25))
+              == "libopenh264")
+        check("run_eval: 多个可用时按优先级取 libx264",
+              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+                  " V..... libopenh264  OpenH264 \n"
+                  " V..... libx264  libx264 H.264 ", _td25)) == "libx264")
+        check("run_eval: 一个 h264 都没有时返回 None（应 SKIP 而非 FAIL）",
+              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+                  " V..... vp9  VP9 encoder ", _td25)) is None)
+        check("run_eval: 拿不到清单时退回 libx264（让真报错如实冒出来）",
+              _RE25.pick_h264_encoder(os.path.join(_td25, "not-exists"))
+              == "libx264")
+
+    # ── _assets.py：GSAP 本地缓存，全程不碰真实网络 ──
+    class _FakeResp25(object):
+        def __init__(self, data):
+            self._d = data
+
+        def read(self):
+            return self._d
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _boom25(*_a, **_k):
+        raise OSError("no network")
+
+    check("_assets: CDN URL 钉住版本号",
+          _AS25.GSAP_VERSION in _AS25.GSAP_CDN_URL, _AS25.GSAP_CDN_URL)
+
+    _ouo25 = _urlreq25.urlopen
+    _ocd25, _ocp25, _olp25 = (_AS25._CACHE_DIR, _AS25._CACHE_PATH,
+                              _AS25._LEGACY_CACHE_PATH)
+    try:
+        with _tf25.TemporaryDirectory() as _td25:
+            _cache25 = os.path.join(_td25, "cache")
+            _AS25._CACHE_DIR = _cache25
+            _AS25._CACHE_PATH = os.path.join(_cache25, "gsap.min.js")
+            _AS25._LEGACY_CACHE_PATH = os.path.join(_td25, "legacy",
+                                                    "gsap.min.js")
+
+            # ① 快路径：输出目录已备好 → 直接复用，不拷缓存也不联网
+            _out1 = os.path.join(_td25, "out1", "vendor")
+            os.makedirs(_out1)
+            with open(os.path.join(_out1, "gsap.min.js"), "w",
+                      encoding="utf-8") as _f25:
+                _f25.write("/* gsap */" * 300)
+
+            def _no_net25(*_a, **_k):
+                raise AssertionError("快路径不该联网")
+
+            _urlreq25.urlopen = _no_net25
+            check("_assets: 已备好的输出目录直接复用（不重新拷贝、不联网）",
+                  _AS25.ensure_local_gsap(os.path.join(_td25, "out1"))
+                  == "vendor/gsap.min.js")
+
+            # ② 下载内容过小（CDN 返回错误页）→ 拒绝，不留半成品
+            _urlreq25.urlopen = lambda *_a, **_k: _FakeResp25(
+                b"<html>404</html>")
+            _r_small = _AS25.ensure_local_gsap(
+                os.path.join(_td25, "out2"), timeout=1)
+            _tmps25 = [n for n in os.listdir(_cache25) if n.endswith(".tmp")] \
+                if os.path.isdir(_cache25) else []
+            check("_assets: 下载内容 <1000 字节判为无效（不写入缓存）",
+                  _r_small is None and not os.path.isfile(_AS25._CACHE_PATH))
+            check("_assets: 下载失败后不留 .tmp 残留",
+                  not _tmps25, _tmps25)
+
+            # ③ 无缓存且网络不可用 → None，由调用方回退 CDN（尽力而为）
+            _urlreq25.urlopen = _boom25
+            check("_assets: 无缓存且下载失败时返回 None（调用方回退 CDN）",
+                  _AS25.ensure_local_gsap(os.path.join(_td25, "out3"),
+                                          timeout=1) is None)
+
+            # ④ 缓存命中 → 拷到输出目录
+            os.makedirs(_cache25, exist_ok=True)
+            with open(_AS25._CACHE_PATH, "w", encoding="utf-8") as _f25:
+                _f25.write("/* cached gsap */" * 300)
+            _out4 = os.path.join(_td25, "out4")
+            check("_assets: 缓存命中时拷贝到输出目录",
+                  _AS25.ensure_local_gsap(_out4) == "vendor/gsap.min.js"
+                  and os.path.getsize(os.path.join(_out4, "vendor",
+                                                   "gsap.min.js")) > 1000)
+
+            # ⑤ 旧路径缓存迁移：老用户不必重新联网下载一次
+            os.remove(_AS25._CACHE_PATH)
+            os.makedirs(os.path.dirname(_AS25._LEGACY_CACHE_PATH))
+            with open(_AS25._LEGACY_CACHE_PATH, "w", encoding="utf-8") as _f25:
+                _f25.write("/* legacy gsap */" * 300)
+            _urlreq25.urlopen = _boom25      # 迁移成功就不该走到联网
+            _out5 = os.path.join(_td25, "out5")
+            check("_assets: 旧缓存路径会被迁移过来（迁移成功就不联网）",
+                  _AS25.ensure_local_gsap(_out5) == "vendor/gsap.min.js"
+                  and os.path.isfile(_AS25._CACHE_PATH))
+    finally:
+        _urlreq25.urlopen = _ouo25
+        _AS25._CACHE_DIR, _AS25._CACHE_PATH = _ocd25, _ocp25
+        _AS25._LEGACY_CACHE_PATH = _olp25
 
     print(f"\n=== {passed} passed, {failed} failed ===")
     summary = {

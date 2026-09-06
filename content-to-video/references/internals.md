@@ -1,6 +1,6 @@
 # 内部机制速览（数据流 / 路径解析 / 缓存）
 
-排查诡异的路径/缓存问题时先看这里（原 `architecture.md`，曾并入 `pitfalls.md`，现独立成此文件）；日常制作不需要——第 3 步记得加 `--resume` 就够。完整踩坑记录仍见 `references/pitfalls.md`。
+排查诡异的路径/缓存问题时先看这里；日常制作不需要——第 3 步记得加 `--resume` 就够。完整踩坑记录仍见 `references/pitfalls.md`。
 
 ### 数据流全景
 
@@ -27,6 +27,8 @@ segments_source.json
 ```
 
 补充产出物（可选，不参与上面这条主链路）：`export_extras.py` 读 `timing_manifest.json` → `chapters.txt` + `captions.srt`。
+
+旁路记录（不产生任何产出物）：每次真实跑批会在用户配置目录 `~/.config/ai-video/traces/` 追加一条运行记录（outcome / 失败阶段 / 是否触发兜底 / 参数哈希 / 环境指纹），不含绝对路径与密钥，也不被任何产出物读取；`--dry-run`、`--no-trace` 或 `CTV_TRACE=0` 时不写，目录可用 `CTV_TRACE_DIR` 覆盖。
 
 ### 路径解析速记
 

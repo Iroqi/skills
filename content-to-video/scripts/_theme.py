@@ -109,7 +109,7 @@ def get_default_accent():
     return default
 
 
-# ── 颜色数学（从 gen_hyperframes.py 拆出，2026-08-18 三原则重构）────
+# ── 颜色数学 ────
 # 纯函数、无注册表依赖：gen_hyperframes（tagline 深浅适配/深浅底判断）与
 # selftest（WCAG 对比度断言）共用——单一来源，任何改动两边自动感知。
 

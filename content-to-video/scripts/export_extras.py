@@ -17,7 +17,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _contracts import load_timing_manifest  # noqa: E402
-from _script_utils import split_subtitle_cues  # noqa: E402
+from _script_utils import (split_subtitle_cues, setup_stdio,  # noqa: E402
+                           subtitle_params_for)
 
 
 def _fmt_chapter_ts(seconds):
@@ -59,7 +60,12 @@ def build_chapters(manifest):
         if not seg_sentences:
             continue
         first_idx = seg_sentences[0]["index"]
-        start_time = sentences_by_index.get(first_idx, seg_sentences[0])["start_time"]
+        # 库调用路径可能拿到未经 load_timing_manifest 校验的 manifest：
+        # 缺 start_time 时回退 0.0 而不是 KeyError 裸栈（CLI 路径有契约
+        # 校验兜底，这里只为直接 import 本模块的用法兜底）
+        first_sent = sentences_by_index.get(first_idx, seg_sentences[0])
+        start_time = first_sent.get("start_time", 0.0) if isinstance(
+            first_sent, dict) else 0.0
         label = seg.get("title") or _ID_LABEL_FALLBACK.get(seg.get("id", ""), seg.get("id", ""))
         chapters.append((start_time, label))
     return chapters
@@ -78,18 +84,26 @@ def write_chapters(manifest, out_path):
     return True
 
 
-def write_srt(manifest, out_path):
+def write_srt(manifest, out_path, aspect="landscape", sub_mode="bar"):
     sentences = sorted(manifest.get("sentences", []), key=lambda s: s["index"])
     if not sentences:
         print("[skip] manifest 没有 'sentences'，无法生成字幕", file=sys.stderr)
         return False
+    # 与成片字幕共用同一份切分参数（_script_utils.subtitle_params_for）：
+    # 以前这里用 split_subtitle_cues 的默认横屏参数，而 gen_hyperframes
+    # 竖屏用 22/1.0/22、verse 竖屏 cue_max_lines=99——竖屏/verse 项目导出
+    # 的 SRT 与片内字幕切行不一致，本文件"逐条对齐"的承诺会悄悄失效。
+    _sub_p = subtitle_params_for(aspect, sub_mode)
     lines = []
     n = 0
     for s in sentences:
         # 与成片字幕同规则：每屏最多两行，超出的行拆成独立 SRT
         # 条目，时长按字符占比切分、相邻条目首尾相接——SRT 与视频内字幕
         # 逐条对齐；说话人前缀只挂首条。
-        groups = split_subtitle_cues(s["text"])
+        groups = split_subtitle_cues(
+            s["text"], max_chars=_sub_p["max_chars"],
+            cue_max_lines=_sub_p["cue_max_lines"], slack=_sub_p["slack"],
+            hard_cap=_sub_p["hard_cap"])
         total_chars = sum(len("".join(g)) for g in groups)
         t = s["start_time"]
         for gi, g in enumerate(groups):
@@ -109,12 +123,24 @@ def write_srt(manifest, out_path):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="从 timing_manifest.json 导出章节时间戳 + SRT 字幕")
     parser.add_argument("-m", "--manifest", required=True, help="timing_manifest.json 路径")
     parser.add_argument("-o", "--output", required=True, help="输出目录（写 chapters.txt / captions.srt）")
     parser.add_argument("--only", choices=["chapters", "srt"], default=None,
                         help="只导出其中一个（缺省两个都导出）")
+    parser.add_argument("--aspect", default="landscape",
+                        choices=["landscape", "vertical", "portrait"],
+                        help="成片画幅（默认 landscape）。必须与渲染时用的"
+                             " --aspect 一致，否则 SRT 切行与片内字幕对不上"
+                             "（竖屏每行 22 字、横屏 28 字）")
+    parser.add_argument("--sub-mode", default=None, choices=["verse", "bar"],
+                        help="字幕模式（默认按画幅取，与 gen_hyperframes.py "
+                             "同规则：横屏 bar、竖屏家族 verse）")
     args = parser.parse_args()
+
+    # 与 gen_hyperframes.py 同规则解析默认 sub_mode（横屏 bar、竖屏 verse）
+    _sub_mode = args.sub_mode or ("bar" if args.aspect == "landscape" else "verse")
 
     try:
         manifest = load_timing_manifest(args.manifest)
@@ -127,7 +153,9 @@ def main():
     if args.only in (None, "chapters"):
         did_something |= write_chapters(manifest, os.path.join(args.output, "chapters.txt"))
     if args.only in (None, "srt"):
-        did_something |= write_srt(manifest, os.path.join(args.output, "captions.srt"))
+        did_something |= write_srt(
+            manifest, os.path.join(args.output, "captions.srt"),
+            aspect=args.aspect, sub_mode=_sub_mode)
 
     if not did_something:
         sys.exit(1)

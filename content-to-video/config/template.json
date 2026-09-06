@@ -15,7 +15,6 @@
         "leftWithoutBadge": 0,
         "topNews": 80,
         "topOther": "16%",
-        "topImageCenter": "46%",
         "fontSizeNews": 84,
         "fontSizeNewsImage": 72,
         "fontSizeOther": 106,
@@ -26,17 +25,19 @@
         "marginTop": 24,
         "padding": "24px 30px",
         "lineHeight": 1.55,
-        "maxWidth": 870
+        "maxWidth": 870,
+        "top": 368
       },
       "tagline": {
         "fontSize": 44,
         "marginTop": 16,
+        "lineHeight": 1.4,
         "indent": 24
       },
       "image": {
-        "width": 900,
+        "width": 860,
         "height": 700,
-        "top": "48%",
+        "top": 550,
         "right": 50,
         "glow": 40
       },
@@ -168,6 +169,17 @@
     },
     "glowPulse": {
       "duration": 0.8
+    },
+    "glowBreath": {
+      "period": 1.6,
+      "min": 0.85
+    },
+    "kenBurns": {
+      "scale": 1.05
+    },
+    "numPop": {
+      "duration": 0.18,
+      "scale": 1.12
     },
     "transitionWipe": {
       "duration": 0.4,

@@ -23,14 +23,19 @@ SKILL.md"渲染命令"一节），只做一件更窄但可以完全自动化的�
 
 退出码：0 = 没有超过阈值的差异（或没有可比较的 baseline）；1 = 发现超阈值差异
 （需要人工看一眼）；2 = 环境问题（未装 Pillow、目录不存在等）。
-diff 子命令另有 --strict：baseline 目录缺失时按失败处理（exit 1）而不是
-警告后跳过——回归 gate 场景下防止"删掉 baseline 就静默通过"。
+diff 子命令另有 --strict：回归 gate 场景下把一切"没比对成"的情况都按失败
+处理（exit 1），堵住两类静默通过：
+  - baseline 目录整个缺失；
+  - baseline 与当前目录没有同名文件（把快照改个名就能让 gate 通过）。
 """
 import argparse
 import json
 import os
 import shutil
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 try:
     from PIL import Image, ImageChops
@@ -112,8 +117,17 @@ def cmd_diff(args):
     only_old = sorted(baseline_files - current_files)
 
     if not common:
-        print("[visual-regression] baseline 与当前关键帧没有同名文件可比对"
-              "（文件名/关键帧数量变了，跳过像素比对，这种结构性变化本身就该去看）")
+        # "没有同名文件可比对"与"baseline 目录缺失"是同一类 gate 逃逸：
+        # 把快照改名就能让像素比对静默通过。默认仍 exit 0（结构性变化
+        # 提示人工去看），--strict（gate 场景）下按失败处理。
+        msg = ("[visual-regression] baseline 与当前关键帧没有同名文件可比对"
+               "（文件名/关键帧数量变了，跳过像素比对，这种结构性变化本身就该去看）")
+        if args.strict:
+            print(msg + "\n[visual-regression] --strict：无可比对的帧按失败处理"
+                  "（exit 1）——改名/换抓帧参数不应让回归 gate 静默通过",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(msg)
 
     results = []
     flagged = []
@@ -155,6 +169,7 @@ def cmd_diff(args):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(description="关键帧像素级视觉回归（baseline diff）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -171,8 +186,9 @@ def main():
                         help=f"mean_diff 超过此值才标记为需要人工看（默认 {DEFAULT_THRESHOLD}）")
     p_diff.add_argument("--json", action="store_true", help="额外输出机器可读 JSON")
     p_diff.add_argument("--strict", action="store_true",
-                        help="baseline 缺失时按失败处理（exit 1）而不是警告后跳过"
-                             "（回归 gate 场景用，防止删掉 baseline 静默通过）")
+                        help="回归 gate 场景用：baseline 目录缺失、或与当前"
+                             "没有同名文件可比对时都按失败处理（exit 1），"
+                             "防止删/改 baseline 让 gate 静默通过")
     p_diff.set_defaults(func=cmd_diff)
 
     args = parser.parse_args()

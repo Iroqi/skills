@@ -49,26 +49,28 @@ Usage:
 产出 <output>/<id>.png（formula 类型为 <id>.svg），可直接在 images.json 里引用（用法和方式 A/B 生成的
 图片完全一样，images.json 不区分图片是搜来的、AI 生成的还是图表画出来的）。
 
-**安全区提醒**：Hyperframes 渲染时图片槽是 900×700 的横版卡片，CSS 用
+**安全区提醒**：Hyperframes 渲染时图片槽是 860×700 的横版卡片，CSS 用
 `object-fit:contain` 填充——不裁边，图表永远完整显示。画布固定 4:3（见
 FIGSIZE，1200×900），与方式 B 的 landscape_4_3 同一比例约定，在横版槽内
-填充率约 96%。本脚本默认仍在画布四周留白（见 SAFE_MARGIN_RATIO），让
+填充率约 92%。本脚本默认仍在画布四周留白（见 SAFE_MARGIN_RATIO），让
 图表主体与卡片边缘有呼吸感（纯排版美观考虑，不是防裁切）。
 """
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _theme import get_default_accent  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 SAFE_MARGIN_RATIO = 0.09  # 画布四周各留 9% 空白（排版呼吸感；contain 填充不裁边）
 
-# 画布 4:3（dpi=100 下 1200×900）：横屏图片槽 900×700（≈1.29:1）contain
-# 填充率约 96%，方图（1:1）只有约 78%（两侧各 ~100px
-# 模糊底）；与方式 B 的 landscape_4_3（1152×864）同一比例约定。竖屏槽
-# 接近正方形时 4:3 仍有约 76% 填充率，是双画幅下的稳妥折中。
+# 画布 4:3（dpi=100 下 1200×900）：横屏图片槽 860×700（≈1.23:1）contain
+# 填充率约 92%（上下各 ~27px 模糊底）；竖屏方槽 980×980 约 75%、portrait
+# 4:3 槽 100%——4:3 与方式 B 的 landscape_4_3（1152×864）同一比例约定，
+# 是双画幅下的稳妥折中。
 FIGSIZE = (12, 9)
 
 # 图表固定用深色底，不跟随 --theme：这跟方式 B（ImageGen）的约定一致——配图
@@ -334,6 +336,7 @@ def _render_curve(chart, out_path):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="从数据点生成图表配图（方式 C，区别于 StepFun 文搜图 / ImageGen 生成示意图）")
     parser.add_argument("-i", "--input", required=True, help="charts.json 路径")
@@ -347,8 +350,17 @@ def main():
               "  pip install matplotlib --break-system-packages", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.input, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(args.input, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        # 坏 JSON / 读不到文件裸栈会直接 traceback，与其它脚本的
+        # "[error] + exit" 约定不一致
+        print(f"[error] 无法读取 {args.input}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print("[error] charts.json 顶层必须是 JSON 对象", file=sys.stderr)
+        sys.exit(1)
     charts = data.get("charts", [])
     if not charts:
         print("[error] charts.json 的 'charts' 为空", file=sys.stderr)
@@ -356,9 +368,15 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
     for chart in charts:
-        cid = chart.get("id")
+        cid = chart.get("id") if isinstance(chart, dict) else None
         if not cid:
             print(f"[error] 有一项 chart 缺少 'id' 字段: {chart}", file=sys.stderr)
+            sys.exit(1)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(cid)):
+            # id 直接拼进输出文件名：../ 序列会把图片写出 -o 目录之外，
+            # 路径分隔符会造出意外子目录——只允许安全字符集
+            print(f"[error] chart id={cid!r} 含非法字符（只允许字母/数字/"
+                  f"下划线/连字符）", file=sys.stderr)
             sys.exit(1)
         ext = ".svg" if (chart.get("type") or "bar").lower() == "formula" else ".png"
         out_path = os.path.join(args.output, f"{cid}{ext}")

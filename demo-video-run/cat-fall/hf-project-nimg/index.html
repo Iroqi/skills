@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920,height=1080">
+<script src="vendor/gsap.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1920px;height:1080px;overflow:hidden;background:linear-gradient(135deg,#f7f3e9 0%,#eee7d6 45%,#f7f3e9 100%)}
+@font-face{font-family:"Microsoft YaHei";src:local("Microsoft YaHei"),local("MicrosoftYaHei")}
+@font-face{font-family:"PingFang SC";src:local("PingFang SC"),local("PingFangSC")}
+@font-face{font-family:"Noto Sans SC";src:local("Noto Sans SC"),local("NotoSansSC")}
+body{font-family:"Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif}
+
+.bg{position:absolute;inset:0;background:linear-gradient(135deg,#f7f3e9 0%,#eee7d6 45%,#f7f3e9 100%)}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(58,92,140,0.07) 1px,transparent 1px),linear-gradient(90deg,rgba(58,92,140,0.07) 1px,transparent 1px);background-size:60px 60px}
+
+.seg-card{position:absolute;inset:0}
+.seg-glow{position:absolute;inset:0;opacity:0;pointer-events:none}
+.seg-accent-bar{position:absolute;top:0;left:0;width:6px;height:1080px;transform-origin:top}
+.badge{position:absolute;top:60px;left:80px;width:110px;height:110px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:54px;font-weight:900;color:#22262b;z-index:5}
+.seg-title-wrap{position:absolute;right:0;padding:0 100px}
+.seg-title{font-weight:900;color:#22262b;line-height:1.25;word-break:break-word}
+.tagline{font-size:44px;margin-top:16px;line-height:1.4;font-weight:600}
+.body-text{margin-top:24px;padding:24px 30px;background:rgba(34,38,43,0.045);border-radius:16px;border-left:4px solid rgba(34,38,43,0.18);backdrop-filter:blur(4px)}
+.body-line{font-size:44px;color:rgba(34,38,43,0.72);line-height:1.55;font-weight:400}
+.body-line+.body-line{margin-top:12px}
+.num-accent{display:inline-block;font-weight:700}
+.agenda-list{display:flex;flex-direction:column;gap:20px;margin-top:56px;align-items:flex-start;text-align:left}
+.agenda-item{display:flex;align-items:flex-start;gap:14px}
+.agenda-num{flex-shrink:0;width:60px;height:60px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-weight:800;
+  font-size:calc(60px * 0.5);color:#0a0e14}
+.agenda-title{font-size:46px;font-weight:600;color:rgba(34,38,43,0.72)}
+.recap-chips{display:flex;flex-wrap:wrap;gap:16px;margin-top:96px;justify-content:center;
+  max-width:100%}
+.recap-chip{padding:14px 28px;border-radius:999px;border:2px solid;
+  font-size:38px;font-weight:600;color:rgba(34,38,43,0.72);
+  background:rgba(255,255,255,0.04)}
+.seg-progress{position:absolute;bottom:0;left:0;height:4px}
+#twipe{position:absolute;top:0;left:-100%;width:100%;height:100%;z-index:50;pointer-events:none;will-change:transform}
+.seg-image{position:absolute;top:550px;right:50px;transform:translateY(-50%);width:860px;height:700px;border-radius:24px;overflow:hidden;background:rgba(34,38,43,0.045)}
+.seg-image::before{content:"";position:absolute;inset:-14%;z-index:0;background-image:var(--img);background-size:cover;background-position:center;filter:blur(28px) brightness(0.9);transform:scale(1.15)}
+.seg-image img{position:relative;z-index:1;width:100%;height:100%;object-fit:contain;display:block}
+
+.sub-bar{position:absolute;bottom:0;left:0;right:0;min-height:176px;background:linear-gradient(transparent,rgba(247,243,233,0.92));display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 50px}
+.sub-speaker{font-size:calc(46px * 0.5);font-weight:700;letter-spacing:0.05em;margin-bottom:6px;opacity:0}
+.sub-speaker.spk-0{color:#1d4ed8}
+.sub-speaker.spk-1{color:#b45309}
+.sub-speaker.spk-2{color:#047857}
+.sub-speaker.spk-3{color:#7c3aed}
+.sub-speaker.spk-4{color:#be123c}
+.sub-speaker.spk-5{color:#0e7490}
+.sub-text{font-size:46px;color:#22262b;text-align:center;line-height:1.6;text-shadow:0 1px 3px rgba(247,243,233,0.85);max-width:1600px;opacity:0}
+.sub-line + .sub-line{margin-top:4px}
+
+/* ── Vertical (9:16) 大标题 + 图片 + 歌词式句子流（竖屏唯一模式）──
+   Only activates when #root has data-aspect="vertical".
+   portrait（3:4，1080x1440）复用本块全部规则，仅 _v_pad/_v_img_ar
+   两处紧凑取值不同（见上方 v_compact 分支：上下留白 100/80、图片槽
+   4:3）。
+   竖屏只有 verse（bar 在 generate_html 入口已被拦下）。结构：大标题
+   区（顶部，边距 220）→ 图片（正方形槽：占满内容宽度、
+   aspect-ratio 1:1，980×980）→ verse 句子流（钉在内容区底部，窗口
+   300px）。verse/clip/line 的通用规则在上方基础块，这里只覆盖竖屏的
+   定位差异：verse 从横屏的"title-wrap 内文档流/开场收尾钉底"改回
+   seg-card flex 流内钉底（margin-top:auto）。
+   verse 对齐规则：所有段落（含开场/收尾）的 verse 上边界钉在内容区
+   底部同一位置——内容段图片是固定正方形，标题行数差异由图片与句子流
+   之间的留白吸收（verse 的 margin-top:auto），不传导给 verse 位置；
+   开场/收尾标题垂直居中于句子上方的空间（margin:auto 0——flex 的
+   自由空间先被 auto margin 均分，标题居中的同时 verse 仍钉底与内容
+   段齐平；文字仍居中）。侧边距统一 50px（标题/图片/句子流对齐同一
+   轴线；1080−50×2=980 即图片槽的宽度）。 */
+[data-aspect="vertical"] .seg-card{display:flex!important;flex-direction:column!important;padding:220px 50px 190px!important}
+[data-aspect="vertical"] .seg-accent-bar{display:none!important}
+[data-aspect="vertical"] .seg-title-wrap{position:relative!important;left:auto!important;right:auto!important;top:auto!important;transform:none!important;width:100%!important;padding:0!important;text-align:left!important;flex-shrink:0!important}
+[data-aspect="vertical"] .seg-title{line-height:1.35!important}
+[data-aspect="vertical"] .tagline{margin-top:12px!important;padding-left:16px}
+[data-aspect="vertical"] .seg-image{position:relative!important;top:auto!important;left:auto!important;right:auto!important;transform:none!important;width:100%!important;max-width:100%!important;height:auto!important;aspect-ratio:1/1!important;flex:0 1 auto!important;margin:48px 0 0!important;border-radius:16px!important}
+[data-aspect="vertical"] .seg-image img,[data-aspect="vertical"] .seg-image video{width:100%!important;height:100%!important;object-fit:contain!important}
+[data-aspect="vertical"] .body-text{margin:24px 0 0!important;padding:20px 24px!important;max-width:100%!important;margin-left:0!important}
+[data-aspect="vertical"] .agenda-list{margin-left:0!important;padding-left:16px}
+[data-aspect="vertical"] .recap-chips{margin-top:24px!important;justify-content:flex-start}
+[data-aspect="vertical"] #opening .seg-title-wrap,[data-aspect="vertical"] #closing .seg-title-wrap{text-align:center!important;margin:auto 0!important}
+[data-aspect="vertical"] #opening .recap-chips,[data-aspect="vertical"] #closing .recap-chips{justify-content:center!important}
+[data-aspect="vertical"] #opening .agenda-list{margin-left:0!important;padding-left:0}
+[data-aspect="vertical"] .seg-glow{display:none}
+
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="main" data-aspect="landscape" data-start="0" data-duration="102.81" data-width="1920" data-height="1080" data-fps="24">
+  <div class="bg"></div>
+  <div class="grid"></div>
+
+  <div id="opening" class="clip seg-card" data-start="0.00" data-duration="8.40" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-opening" style="background:radial-gradient(circle at 50% 50%,#64b5f615,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-opening" style="background:#64b5f6"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:16%;text-align:center;">
+      <div class="seg-title" id="title-opening" style="font-size:106px;text-shadow:0 0 40px #64b5f640">本期内容</div>
+      
+      <div class="recap-chips" id="chiprow-opening"><div class="recap-chip" id="recapchip-opening-0" style="border-color:#ffd54f">一个反直觉的统计</div><div class="recap-chip" id="recapchip-opening-1" style="border-color:#4fc3f7">翻正反射</div><div class="recap-chip" id="recapchip-opening-2" style="border-color:#81c784">没有支点怎么转身</div><div class="recap-chip" id="recapchip-opening-3" style="border-color:#ffb74d">一百毫秒的时间窗</div><div class="recap-chip" id="recapchip-opening-4" style="border-color:#ef5350">越高反而越安全</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-opening" style="background:#64b5f6;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="seg1" class="clip seg-card" data-start="8.80" data-duration="15.84" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-seg1" style="background:radial-gradient(circle at 50% 50%,#ffd54f15,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-seg1" style="background:#ffd54f"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:80px;text-align:center;">
+      <div class="seg-title" id="title-seg1" style="font-size:84px;text-shadow:0 0 40px #ffd54f40">一个反直觉的统计</div>
+      <div class="tagline" id="tag-seg1" style="color:#997f2f">高楼症现象</div>
+      <div class="body-text" id="body-seg1"><div class="body-line" id="bodyline-seg1-0">兽医界有个著名的怪现象，叫高楼症。</div><div class="body-line" id="bodyline-seg1-1">上世纪<span class="num-accent" style="color:#ffd54f">80</span>年代，纽约的兽医统计过<span class="num-accent" style="color:#ffd54f">100</span>多只坠楼猫，约<span class="num-accent" style="color:#ffd54f">90</span>%都活了下来。</div><div class="body-line" id="bodyline-seg1-2">更奇怪的是，<span class="num-accent" style="color:#ffd54f">7</span>层以上的高处坠落，猫受的伤反而更轻。</div><div class="body-line" id="bodyline-seg1-3">今天就让我们从这条下落的猫开始，看看物理学怎么解释这一切。</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-seg1" style="background:#ffd54f;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="seg2" class="clip seg-card" data-start="25.04" data-duration="15.30" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-seg2" style="background:radial-gradient(circle at 50% 50%,#4fc3f715,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-seg2" style="background:#4fc3f7"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:80px;text-align:center;">
+      <div class="seg-title" id="title-seg2" style="font-size:84px;text-shadow:0 0 40px #4fc3f740">翻正反射</div>
+      <div class="tagline" id="tag-seg2" style="color:#2f7594">与生俱来的本领</div>
+      <div class="body-text" id="body-seg2"><div class="body-line" id="bodyline-seg2-0">要解释高空存活，得先认识猫的看家本领——翻正反射。</div><div class="body-line" id="bodyline-seg2-1">这是一套与生俱来的本能反应，完全不需要思考和练习。</div><div class="body-line" id="bodyline-seg2-2">前庭系统一旦察觉身体失去平衡，它就自动启动。</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-seg2" style="background:#4fc3f7;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="seg3" class="clip seg-card" data-start="40.74" data-duration="18.08" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-seg3" style="background:radial-gradient(circle at 50% 50%,#81c78415,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-seg3" style="background:#81c784"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:80px;text-align:center;">
+      <div class="seg-title" id="title-seg3" style="font-size:84px;text-shadow:0 0 40px #81c78440">没有支点怎么转身</div>
+      <div class="tagline" id="tag-seg3" style="color:#4d774f">角动量守恒</div>
+      <div class="body-text" id="body-seg3"><div class="body-line" id="bodyline-seg3-0">问题来了，半空里没有任何支点，猫是怎么给自己掉头的？</div><div class="body-line" id="bodyline-seg3-1">答案藏在角动量守恒里：整体不动，可以分局部来转。</div><div class="body-line" id="bodyline-seg3-2">猫把身体对折成前后两半，先收紧前肢让前半身快速翻转，再伸展后腿让后半身慢慢跟上来。</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-seg3" style="background:#81c784;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="seg4" class="clip seg-card" data-start="59.22" data-duration="14.02" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-seg4" style="background:radial-gradient(circle at 50% 50%,#ffb74d15,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-seg4" style="background:#ffb74d"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:80px;text-align:center;">
+      <div class="seg-title" id="title-seg4" style="font-size:84px;text-shadow:0 0 40px #ffb74d40">一百毫秒的时间窗</div>
+      <div class="tagline" id="tag-seg4" style="color:#996d2e">快过一次眨眼</div>
+      <div class="body-text" id="body-seg4"><div class="body-line" id="bodyline-seg4-0">这整套翻身动作有多快？</div><div class="body-line" id="bodyline-seg4-1">答案是<span class="num-accent" style="color:#ffb74d">100</span>毫秒左右，比你眨一次眼还要快<span class="num-accent" style="color:#ffb74d">3</span>倍。</div><div class="body-line" id="bodyline-seg4-2">前半身转完换后半身，弓背、展体、伸出四肢，全部一瞬间完成。</div><div class="body-line" id="bodyline-seg4-3">所以慢镜头里的猫，看起来就像凭空拧了一下腰。</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-seg4" style="background:#ffb74d;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="seg5" class="clip seg-card" data-start="73.64" data-duration="21.69" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-seg5" style="background:radial-gradient(circle at 50% 50%,#ef535015,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-seg5" style="background:#ef5350"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:80px;text-align:center;">
+      <div class="seg-title" id="title-seg5" style="font-size:84px;text-shadow:0 0 40px #ef535040">越高反而越安全</div>
+      <div class="tagline" id="tag-seg5" style="color:#8f3130">终端速度的秘密</div>
+      <div class="body-text" id="body-seg5"><div class="body-line" id="bodyline-seg5-0">最后回到开头的悖论：为什么楼越高，猫摔得反而越轻？</div><div class="body-line" id="bodyline-seg5-1">猫体重轻，下落时还会舒展四肢增大空气阻力，终端速度只有每小时<span class="num-accent" style="color:#ef5350">100</span>公里上下。</div><div class="body-line" id="bodyline-seg5-2">相比之下，人类的终端速度接近每小时<span class="num-accent" style="color:#ef5350">200</span>公里。</div></div>
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-seg5" style="background:#ef5350;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+  <div id="closing" class="clip seg-card" data-start="95.73" data-duration="7.08" data-track-index="1" style="opacity:0">
+    <div class="seg-glow" id="glow-closing" style="background:radial-gradient(circle at 50% 50%,#64b5f615,transparent 60%)"></div>
+    <div class="seg-accent-bar" id="bar-closing" style="background:#64b5f6"></div>
+    
+    <div class="seg-title-wrap" style="left:0px;right:0;width:1920px;top:16%;text-align:center;">
+      <div class="seg-title" id="title-closing" style="font-size:106px;text-shadow:0 0 40px #64b5f640">小结</div>
+      
+      
+      
+    </div>
+    
+    <div class="seg-progress" id="prog-closing" style="background:#64b5f6;width:0"></div>
+    
+    <div class="sub-bar">
+      <div class="sub-speaker"></div>
+      <div class="sub-text"></div>
+    </div>
+
+  </div>
+
+  <div id="twipe" data-layout-allow-occlusion></div>
+
+  <audio id="main-audio" data-start="0" data-duration="102.81" data-track-index="10" src="audio/combined.wav"></audio>
+</div>
+
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({paused:true});
+  tl.fromTo("#opening",{opacity:0},{opacity:1,duration:0.4},0.00)
+  tl.to("#opening",{opacity:0,duration:0.3,ease:"power2.in"},8.40)
+  tl.set("#opening",{opacity:0},8.70)
+  tl.from("#bar-opening",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},0.00)
+  tl.fromTo("#glow-opening",{opacity:0},{opacity:1,duration:0.80},0.00)
+  tl.to("#glow-opening",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:2},0.80)
+  tl.from("#title-opening",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},0.00)
+  tl.from("#recapchip-opening-0",{opacity:0,scale:0.8,duration:0.35,ease:"back.out(1.8)"},0.60)
+  tl.from("#recapchip-opening-1",{opacity:0,scale:0.8,duration:0.35,ease:"back.out(1.8)"},0.70)
+  tl.from("#recapchip-opening-2",{opacity:0,scale:0.8,duration:0.35,ease:"back.out(1.8)"},0.80)
+  tl.from("#recapchip-opening-3",{opacity:0,scale:0.8,duration:0.35,ease:"back.out(1.8)"},0.90)
+  tl.from("#recapchip-opening-4",{opacity:0,scale:0.8,duration:0.35,ease:"back.out(1.8)"},1.00)
+  tl.to("#prog-opening",{width:"100%",duration:8.40,ease:"none"},0.00)
+  tl.fromTo("#seg1",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},8.80)
+  tl.to("#seg1",{opacity:0,duration:0.3,ease:"power2.in"},24.64)
+  tl.set("#seg1",{opacity:0},24.94)
+  tl.from("#bar-seg1",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},8.80)
+  tl.fromTo("#glow-seg1",{opacity:0},{opacity:1,duration:0.80},8.80)
+  tl.to("#glow-seg1",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:4},9.60)
+  tl.from("#title-seg1",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},8.80)
+  tl.from("#tag-seg1",{opacity:0,y:20,duration:0.50},9.10)
+  tl.from("#bodyline-seg1-0",{opacity:0,x:-20,duration:0.40},9.40)
+  tl.from("#bodyline-seg1-1",{opacity:0,x:-20,duration:0.40},9.55)
+  tl.fromTo("#bodyline-seg1-1 .num-accent",{scale:1},{scale:1.12,duration:0.18,ease:"power2.out",yoyo:true,repeat:1},9.95)
+  tl.from("#bodyline-seg1-2",{opacity:0,x:-20,duration:0.40},9.70)
+  tl.fromTo("#bodyline-seg1-2 .num-accent",{scale:1},{scale:1.12,duration:0.18,ease:"power2.out",yoyo:true,repeat:1},10.10)
+  tl.from("#bodyline-seg1-3",{opacity:0,x:-20,duration:0.40},9.85)
+  tl.to("#prog-seg1",{width:"100%",duration:15.84,ease:"none"},8.80)
+  tl.fromTo("#seg2",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},25.04)
+  tl.to("#seg2",{opacity:0,duration:0.3,ease:"power2.in"},40.34)
+  tl.set("#seg2",{opacity:0},40.64)
+  tl.from("#bar-seg2",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},25.04)
+  tl.fromTo("#glow-seg2",{opacity:0},{opacity:1,duration:0.80},25.04)
+  tl.to("#glow-seg2",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:4},25.84)
+  tl.from("#title-seg2",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},25.04)
+  tl.from("#tag-seg2",{opacity:0,y:20,duration:0.50},25.34)
+  tl.from("#bodyline-seg2-0",{opacity:0,x:-20,duration:0.40},25.64)
+  tl.from("#bodyline-seg2-1",{opacity:0,x:-20,duration:0.40},25.79)
+  tl.from("#bodyline-seg2-2",{opacity:0,x:-20,duration:0.40},25.94)
+  tl.to("#prog-seg2",{width:"100%",duration:15.30,ease:"none"},25.04)
+  tl.fromTo("#seg3",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},40.74)
+  tl.to("#seg3",{opacity:0,duration:0.3,ease:"power2.in"},58.82)
+  tl.set("#seg3",{opacity:0},59.12)
+  tl.from("#bar-seg3",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},40.74)
+  tl.fromTo("#glow-seg3",{opacity:0},{opacity:1,duration:0.80},40.74)
+  tl.to("#glow-seg3",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:5},41.54)
+  tl.from("#title-seg3",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},40.74)
+  tl.from("#tag-seg3",{opacity:0,y:20,duration:0.50},41.04)
+  tl.from("#bodyline-seg3-0",{opacity:0,x:-20,duration:0.40},41.34)
+  tl.from("#bodyline-seg3-1",{opacity:0,x:-20,duration:0.40},41.49)
+  tl.from("#bodyline-seg3-2",{opacity:0,x:-20,duration:0.40},41.64)
+  tl.to("#prog-seg3",{width:"100%",duration:18.08,ease:"none"},40.74)
+  tl.fromTo("#seg4",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},59.22)
+  tl.to("#seg4",{opacity:0,duration:0.3,ease:"power2.in"},73.24)
+  tl.set("#seg4",{opacity:0},73.54)
+  tl.from("#bar-seg4",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},59.22)
+  tl.fromTo("#glow-seg4",{opacity:0},{opacity:1,duration:0.80},59.22)
+  tl.to("#glow-seg4",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:4},60.02)
+  tl.from("#title-seg4",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},59.22)
+  tl.from("#tag-seg4",{opacity:0,y:20,duration:0.50},59.52)
+  tl.from("#bodyline-seg4-0",{opacity:0,x:-20,duration:0.40},59.82)
+  tl.from("#bodyline-seg4-1",{opacity:0,x:-20,duration:0.40},59.97)
+  tl.fromTo("#bodyline-seg4-1 .num-accent",{scale:1},{scale:1.12,duration:0.18,ease:"power2.out",yoyo:true,repeat:1},60.37)
+  tl.from("#bodyline-seg4-2",{opacity:0,x:-20,duration:0.40},60.12)
+  tl.from("#bodyline-seg4-3",{opacity:0,x:-20,duration:0.40},60.27)
+  tl.to("#prog-seg4",{width:"100%",duration:14.02,ease:"none"},59.22)
+  tl.fromTo("#seg5",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},73.64)
+  tl.to("#seg5",{opacity:0,duration:0.3,ease:"power2.in"},95.33)
+  tl.set("#seg5",{opacity:0},95.63)
+  tl.from("#bar-seg5",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},73.64)
+  tl.fromTo("#glow-seg5",{opacity:0},{opacity:1,duration:0.80},73.64)
+  tl.to("#glow-seg5",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:6},74.44)
+  tl.from("#title-seg5",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},73.64)
+  tl.from("#tag-seg5",{opacity:0,y:20,duration:0.50},73.94)
+  tl.from("#bodyline-seg5-0",{opacity:0,x:-20,duration:0.40},74.24)
+  tl.from("#bodyline-seg5-1",{opacity:0,x:-20,duration:0.40},74.39)
+  tl.fromTo("#bodyline-seg5-1 .num-accent",{scale:1},{scale:1.12,duration:0.18,ease:"power2.out",yoyo:true,repeat:1},74.79)
+  tl.from("#bodyline-seg5-2",{opacity:0,x:-20,duration:0.40},74.54)
+  tl.fromTo("#bodyline-seg5-2 .num-accent",{scale:1},{scale:1.12,duration:0.18,ease:"power2.out",yoyo:true,repeat:1},74.94)
+  tl.to("#prog-seg5",{width:"100%",duration:21.69,ease:"none"},73.64)
+  tl.fromTo("#closing",{opacity:0},{opacity:1,duration:0.6,ease:"power2.out"},95.73)
+  tl.to("#closing",{opacity:0,duration:0.3,ease:"power2.in"},102.81)
+  tl.set("#closing",{opacity:0},103.11)
+  tl.from("#bar-closing",{scaleY:0,transformOrigin:"top",duration:0.50,ease:"power2.out"},95.73)
+  tl.fromTo("#glow-closing",{opacity:0},{opacity:1,duration:0.80},95.73)
+  tl.to("#glow-closing",{opacity:0.85,duration:1.60,ease:"sine.inOut",yoyo:true,repeat:1},96.53)
+  tl.from("#title-closing",{scale:0.5,duration:0.50,ease:"back.out(1.7)"},95.73)
+  tl.to("#prog-closing",{width:"100%",duration:7.08,ease:"none"},95.73)
+
+  // Sentence-flow sync via onUpdate
+  const cues = [
+    {t:0.00,d:8.40,si:0,lines:["大家好，今天我们聊一个物理学和生物学联手解开的谜题——猫","从高处摔下来，为什么总能四脚着地。"]},
+    {t:8.80,d:2.47,si:1,lines:["兽医界有个著名的怪现象，叫高楼症。"]},
+    {t:11.68,d:4.48,si:2,lines:["上世纪80年代，纽约的兽医统计过100多只坠楼猫，约90","%都活了下来。"]},
+    {t:16.55,d:3.63,si:3,lines:["更奇怪的是，7层以上的高处坠落，猫受的伤反而更轻。"]},
+    {t:20.58,d:4.06,si:4,lines:["今天就让我们从这条下落的猫开始，看看物理学怎么解释这一切","。"]},
+    {t:25.04,d:4.28,si:5,lines:["要解释高空存活，得先认识猫的看家本领——翻正反射。"]},
+    {t:29.72,d:3.10,si:6,lines:["这是一套与生俱来的本能反应，完全不需要思考和练习。"]},
+    {t:33.21,d:3.31,si:7,lines:["前庭系统一旦察觉身体失去平衡，它就自动启动。"]},
+    {t:36.92,d:3.42,si:8,lines:["小猫长到6到7周大，就能把这套路数练得炉火纯青。"]},
+    {t:40.74,d:3.63,si:9,lines:["问题来了，半空里没有任何支点，猫是怎么给自己掉头的？"]},
+    {t:44.77,d:3.63,si:10,lines:["答案藏在角动量守恒里：整体不动，可以分局部来转。"]},
+    {t:48.80,d:6.42,si:11,lines:["猫把身体对折成前后两半，先收紧前肢让前半身快速翻转，再伸","展后腿让后半身慢慢跟上来。"]},
+    {t:55.62,d:3.20,si:12,lines:["一收一展之间，四只爪子已经在落地前对准了地面。"]},
+    {t:59.22,d:1.71,si:13,lines:["这整套翻身动作有多快？"]},
+    {t:61.33,d:3.31,si:14,lines:["答案是100毫秒左右，比你眨一次眼还要快3倍。"]},
+    {t:65.04,d:4.81,si:15,lines:["前半身转完换后半身，弓背、展体、伸出四肢，全部一瞬间完成","。"]},
+    {t:70.25,d:2.99,si:16,lines:["所以慢镜头里的猫，看起来就像凭空拧了一下腰。"]},
+    {t:73.64,d:3.42,si:17,lines:["最后回到开头的悖论：为什么楼越高，猫摔得反而越轻？"]},
+    {t:77.45,d:5.13,si:18,lines:["猫体重轻，下落时还会舒展四肢增大空气阻力，终端速度只有每","小时100公里上下。"]},
+    {t:82.99,d:3.10,si:19,lines:["相比之下，人类的终端速度接近每小时200公里。"]},
+    {t:86.49,d:4.27,si:20,lines:["到达终端速度后加速度消失，猫会放松肌肉，把冲击摊到全身。"]},
+    {t:91.16,d:4.17,si:21,lines:["这就是高楼症的另一半答案——物理定律给猫留了一条活路。"]},
+    {t:95.73,d:4.67,si:22,lines:["一只下落的猫，同时写着生物本能和物理定律。"]},
+    {t:100.79,d:2.01,si:23,lines:["感谢收看，下期再见。"]}
+  ];
+  // verse 句子流：静态行集合（verse 模式横竖屏都渲染；bar 模式集合为
+  // 空、verseUpdate 自然跳过——机制保留是为了两模式共用同一份 cue 驱动）。
+  // 渲染器逐帧 seek 触发 onUpdate（非线性顺序），测量做懒缓存——布局值
+  // （offsetTop/clientHeight/scrollHeight）不受 transform 与 seek 顺序影
+  // 响、字体就绪后恒定，首帧测量一次即可；transform 赋绝对值幂等，乱序
+  // seek 重复执行结果一致（seek-safe）。
+  const verses = Array.from(document.querySelectorAll(".verse"));
+  const verseCache = new Map();
+  // 字体异步加载会改变行高：就绪后清缓存，下次触发时用最终字形重测
+  // （期间已设的 transform 按旧测量算，偏差在下一次 cue 切换即修正）
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => verseCache.clear());
+  }
+  const verseUpdate = (si) => {
+    for (const v of verses) {
+      let c = verseCache.get(v);
+      if (!c) {
+        const clip = v.querySelector(".verse-clip");
+        c = {clip: clip, accent: clip.getAttribute("data-accent") || "", winH: v.clientHeight, clipH: clip.scrollHeight, lines: []};
+        for (const ln of v.querySelectorAll(".verse-line")) {
+          c.lines.push({el: ln, top: ln.offsetTop});
+        }
+        verseCache.set(v, c);
+      }
+      let act = null;
+      for (const L of c.lines) {
+        if (parseInt(L.el.getAttribute("data-i"), 10) === si) { act = L; break; }
+      }
+      for (const L of c.lines) {
+        const di = parseInt(L.el.getAttribute("data-i"), 10);
+        L.el.classList.toggle("active", L === act);
+        // 当前句用段落 accent 着色（字重恒定，避免 500/700 切换时
+        // 字形宽度跳变）；非活动行恢复主题色，transition 平滑过渡
+        L.el.style.color = (L === act && c.accent) ? c.accent : "";
+        // past 只在同一 verse（同段落）内比较，跨段句序无先后语义
+        L.el.classList.toggle("past", !!act && di < si);
+      }
+      if (act) {
+        // 歌词式滚动：active 行滚到窗口顶部往下 60px（= clip 顶部
+        // 内边距，与 .verse-clip 的 padding 保持一致——首句/尾句完整
+        // 落在 mask 渐隐区之外，不被边缘虚化）；首行不滚出顶、末行
+        // 不露底白（clip 比窗口矮时整体不滚）
+        const y = c.clipH <= c.winH ? 0
+          : Math.max(c.winH - c.clipH, Math.min(0, 60 - act.top));
+        c.clip.style.transform = "translateY(" + y + "px)";
+      }
+    }
+  };
+
+  const subEls = Array.from(document.querySelectorAll(".sub-text"));
+  const spkEls = Array.from(document.querySelectorAll(".sub-speaker"));
+  let curCueKey = null; // 当前已渲染的 cue 标识，避免每帧重建行 DOM
+  tl.eventCallback("onUpdate", function() {
+    const t = tl.time();
+    let found = null;
+    for (let i = 0; i < cues.length; i++) {
+      if (t >= cues[i].t && t < cues[i].t + Math.max(cues[i].d, 0.01)) { found = cues[i]; break; }
+    }
+    if (found) {
+      // cue 切换时才重建行 DOM；行内容用 textContent（不走 innerHTML），
+      // 信源文本里的任何字符都只会被当纯文本渲染。
+      const key = found.t + "|" + found.d + "|" + (found.speaker || "");
+      if (key !== curCueKey) {
+        curCueKey = key;
+        for (const subEl of subEls) {
+          subEl.textContent = "";
+          for (const ln of found.lines) {
+            const div = document.createElement("div");
+            div.className = "sub-line";
+            div.textContent = ln;
+            subEl.appendChild(div);
+          }
+        }
+      }
+      // found.d 兜底 0.01（与上方 cue 命中判断同一保护）：
+      // duration:0 的手写句会得到 Infinity/NaN，字幕透明度落到 0
+      const local = (t - found.t) / Math.max(found.d, 0.01);
+      const fade = 0.15;
+      let op = 1;
+      if (local < fade) op = local / fade;
+      else if (local > 1 - fade) op = (1 - local) / fade;
+      op = Math.max(0, Math.min(1, op));
+      for (let i = 0; i < subEls.length; i++) {
+        const subEl = subEls[i];
+        subEl.style.opacity = op;
+        // 多行字幕逐行错峰淡入：第 i 行在 cue 进度 i*0.18 后开始出现；
+        // 整体淡入淡出由容器 subEl 的 op 承担，行内只设自身错峰值
+        // （行内再乘 op 会 lop*op² 双重相乘，把 fade 曲线平方化）。
+        const rows = subEl.children;
+        for (let r = 0; r < rows.length; r++) {
+          const start = r * 0.18;
+          let lop = Math.max(0, Math.min(1, (local - start) / fade));
+          rows[r].style.opacity = lop;
+        }
+        const spkEl = spkEls[i];
+        if (found.speaker) {
+          if (spkEl.textContent !== found.speaker) spkEl.textContent = found.speaker;
+          spkEl.className = "sub-speaker spk-" + (found.spk || 0);
+          spkEl.style.opacity = op;
+        } else {
+          spkEl.style.opacity = 0;
+        }
+      }
+    } else {
+      curCueKey = null;
+      for (let i = 0; i < subEls.length; i++) {
+        subEls[i].style.opacity = 0;
+        spkEls[i].style.opacity = 0;
+      }
+    }
+    if (window.__pvUpdate) window.__pvUpdate(); // 预览刷新钩子（无预览时为空）
+  });
+
+// 注册放脚本末尾（同步执行流内，行为与紧跟构建后注册等价）：hyperframes
+// 的 lint 规则按源码位置判定"注册是否早于 document.fonts.ready 异步构建"
+// （window.__timelines[ 出现点必须在 fonts.ready 之后），bar 模式 JS 里
+// Array.from 的 ".from(" 会被规则的 GSAP 补间正则误判，注册线在 fonts.ready
+// 之前就会触发 gsap_timeline_registered_before_async_build 误报。
+window.__timelines["main"] = tl;</script>
+<script src="preview.js"></script>
+</body>
+</html>

@@ -26,8 +26,8 @@ GSAP_CDN_URL = f"https://cdn.jsdelivr.net/npm/gsap@{GSAP_VERSION}/dist/gsap.min.
 
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "content-to-video", "vendor")
 _CACHE_PATH = os.path.join(_CACHE_DIR, f"gsap-{GSAP_VERSION}.min.js")
-# skill 前身叫 ai-daily-video，缓存曾在 ~/.cache/ai-daily-video/ 下。改名后
-# 新路径 miss 时先迁移旧缓存，老用户不用重新联网下载一次 GSAP。
+# 兼容旧缓存路径：skill 改名前的 ~/.cache/ai-daily-video/ 下若已有同版本
+# GSAP 缓存，新路径 miss 时先迁移过来，老用户不用重新联网下载一次 GSAP。
 _LEGACY_CACHE_PATH = os.path.join(os.path.expanduser("~"), ".cache",
                                   "ai-daily-video", "vendor",
                                   f"gsap-{GSAP_VERSION}.min.js")

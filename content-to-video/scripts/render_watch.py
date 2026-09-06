@@ -11,7 +11,7 @@ MP4 文件已经完整写出（ffmpeg mux 完成、文件大小不再变化）�
 
 **这个脚本的做法**：不等进程退出，而是把渲染命令丢到后台，轮询目标输出文件
 ——文件出现且连续 N 次轮询大小不变，就认为渲染已经完成；随后先等进程自然
-退出（最多 30s 宽限期，覆盖 MP4 收尾 moov 重写的写入停顿，期间继续监视），
+退出（最多 12s 宽限期，覆盖 MP4 收尾 moov 重写的写入停顿，期间继续监视），
 宽限期过才**强制收掉整棵进程树**（Windows 用
 `taskkill /T /F`，POSIX 用进程组信号），避免残留的 Node/Chrome 进程一直占着
 不退出——这正是"视频早渲染好了、但对话窗口一直拿不到结果"的根因。
@@ -41,10 +41,16 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stderr 强制 UTF-8
+
 
 # 输出文件判定"稳定"后，给渲染进程自然退出的宽限期上限（秒）。MP4 收尾
 # 要重写 moov box，期间文件大小可能短暂不变——稳定即强杀会截断收尾产坏片。
-_EXIT_GRACE_SECONDS = 30.0
+# 12s 的依据：实测 110s 成片的 assemble（moov/混流）阶段仅 ~3s，12s 已留
+# 4 倍余量；进程真挂住时（pitfalls #16 的常见场景）每轮渲染省下 18s 空等。
+# 截断风险由下游 verify_render 兜底（时长/编码校验不过会拦下）。
+_EXIT_GRACE_SECONDS = 12.0
 
 
 def _print_log_tail(log_path, max_lines=25):
@@ -63,6 +69,26 @@ def _print_log_tail(log_path, max_lines=25):
         print("    " + line.rstrip(), file=sys.stderr)
 
 
+def _resolve_npx_shim(shim_path):
+    """把 npx.cmd shim 解析成 [node.exe, npx-cli.js] 直调形态。
+
+    npx.cmd 本质是 `node "<shim目录>/node_modules/npm/bin/npx-cli.js" %*`
+    的包装。直接 spawn 这一对可以完全绕开 cmd.exe 中转：
+    - 少一层进程，调用更快；
+    - 没有 cmd.exe 的引号二次解析问题（/c 后整串含 & 或引号时的
+      拦腰截断/转义地狱，见历史：/d /s /c + 外层引号方案会被 Popen 的
+      list2cmdline 二次转义成 \\" 开头，cmd 不剥引号、整串被当命令名）。
+
+    返回列表或 None（shim 结构不符预期时，由调用方走 comspec 回退）。
+    """
+    shim_dir = os.path.dirname(os.path.abspath(shim_path))
+    node_exe = os.path.join(shim_dir, "node.exe")
+    npx_cli = os.path.join(shim_dir, "node_modules", "npm", "bin", "npx-cli.js")
+    if os.path.isfile(node_exe) and os.path.isfile(npx_cli):
+        return [node_exe, npx_cli]
+    return None
+
+
 def resolve_command(cmd):
     """把命令列表里的可执行名解析成可被 Python 直接 spawn 的形式。
 
@@ -70,7 +96,11 @@ def resolve_command(cmd):
     subprocess.Popen(["npx", ...]) 的 CreateProcess 无法直接启动 .cmd 文件，
     会以 FileNotFoundError / WinError 193 失败。这里统一解析：
     - POSIX：shutil.which 后直接用绝对路径；
-    - Windows 且命中 .cmd/.bat：交给 %COMSPEC% /c 启动。
+    - Windows 且命中 npx.cmd：解析 shim 直调 node + npx-cli.js（见
+      _resolve_npx_shim；解析失败才回退 %COMSPEC% /c 中转）；
+    - Windows 其他 .cmd/.bat：交给 %COMSPEC% /c 启动（注意：该路径下
+      参数含 `&` 等 cmd 元字符时会被当命令分隔符——npx 直调路径不存在
+      此问题，.bat 极少用于带特殊字符参数的场景）。
     """
     if not cmd:
         return cmd
@@ -87,18 +117,26 @@ def resolve_command(cmd):
                 exe = alt
                 break
     if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+        if exe.lower().endswith(".cmd"):
+            direct = _resolve_npx_shim(exe)
+            if direct is not None:
+                return direct + cmd[1:]
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         return [comspec, "/c"] + cmd
     return [exe] + cmd[1:]
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="包装渲染命令：不等进程退出，轮询输出文件是否已写完")
     parser.add_argument("-o", "--output", required=True,
                          help="渲染命令会产出的目标文件路径")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--stable-checks", type=int, default=2)
+    parser.add_argument("--grace", type=float, default=_EXIT_GRACE_SECONDS,
+                        help="文件稳定后等待进程自然退出的宽限期秒数"
+                             "（默认 12；覆盖 moov 收尾写入停顿，超时才强杀）")
     parser.add_argument("--max-wait", type=float, default=1800.0)
     parser.add_argument("cmd", nargs=argparse.REMAINDER,
                          help="'--' 之后的实际渲染命令")
@@ -138,9 +176,9 @@ def main():
 
     print(f"[render_watch] 启动: {' '.join(cmd)}", file=sys.stderr)
     print(f"[render_watch] 子进程 stderr 日志: {log_path}", file=sys.stderr)
-    # start_new_session=True：让子进程（及它可能派生出的 Chromium 等孙进程）
-    # 单独成一个进程组，方便后面按组发信号；也避免它继承本脚本的信号处理
-    # 行为导致互相干扰。
+    # start_new_session：POSIX 下让子进程单独成组、可按组发信号（Windows
+    # 上该参数被 CPython 忽略，是 no-op——Windows 的进程树收尾由 _try_kill
+    # 的 taskkill /T /F 按 PID 树兜底）。
     # 先置 None 再进 try：若 open 本身失败（权限/磁盘问题），finally 里的
     # close 检查才不会 NameError
     log_fh = None
@@ -169,7 +207,7 @@ def main():
                 _print_log_tail(log_path)
                 sys.exit(1)
 
-            # 进程自己正常退出了（没有卡住），直接按退出码走原来的逻辑判断。
+            # 进程自己正常退出了（没有卡住），按退出码走正常判断逻辑。
             ret = proc.poll()
             if ret is not None:
                 if ret != 0:
@@ -207,15 +245,15 @@ def main():
                 last_mtime = mtime
                 if stable_count >= args.stable_checks:
                     # MP4 收尾要停写一小段重写 moov box——"文件大小不变"不
-                    # 代表 mux 已收尾。判定稳定后先给进程最多 30s 自然退出
-                    # 的宽限期（期间继续轮询，进程自然退出走上方 poll 分支），
-                    # 宽限期过才强杀，避免把 moov 重写拦腰截断产出坏片。
+                    # 代表 mux 已收尾。判定稳定后先给进程最多 grace 秒自然
+                    # 退出的宽限期（期间继续轮询，进程自然退出走上方 poll
+                    # 分支），宽限期过才强杀，避免把 moov 重写拦腰截断产坏片。
                     if grace_deadline is None:
-                        grace_deadline = time.time() + _EXIT_GRACE_SECONDS
+                        grace_deadline = time.time() + args.grace
                         print(f"[render_watch] 输出文件 {out_path} 大小已连续 "
                               f"{args.stable_checks} 次轮询不变（{size} bytes），"
                               f"判定渲染已完成；等待进程自然退出（最多 "
-                              f"{_EXIT_GRACE_SECONDS:.0f}s 宽限期，超时才强制"
+                              f"{args.grace:.0f}s 宽限期，超时才强制"
                               f"结束，用时 {elapsed:.1f}s）……", file=sys.stderr)
                     elif time.time() >= grace_deadline:
                         print(f"[render_watch] 宽限期已过进程仍未退出，强制结束"
@@ -243,8 +281,8 @@ def main():
 def _try_kill(proc):
     """收掉残留进程树，失败也不影响已经产出的文件。
 
-    Windows 上没有 os.killpg，原来的 SIGTERM/SIGKILL 分支在 Windows 上是空操作，
-    导致 Node/Chrome 进程残留。这里用 taskkill /T /F 按进程树强制结束。
+    Windows 上没有 os.killpg，POSIX 的 SIGTERM/SIGKILL 在 Windows 是空操作，
+    会导致 Node/Chrome 进程残留；这里用 taskkill /T /F 按进程树强制结束。
     """
     if os.name == "nt":
         try:

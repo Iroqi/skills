@@ -66,6 +66,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _env import get_key  # noqa: E402
 from _titles import extract_titles_from_manifest  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 
 # ===================================================================
@@ -186,7 +187,8 @@ def search_image(api_key, query, topk=1, max_retries=3):
 # （optimize_image 还会压到 1040px 长边），只增加下载与内存开销
 _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
-# 常见图片格式魔数（WebP 是 RIFF 容器：头 4 字节 RIFF + 偏移 8:12 处 WEBP）
+# 常见图片格式魔数（WebP 是 RIFF 容器：头 4 字节 RIFF + 偏移 8:12 处 WEBP；
+# AVIF 是 ISOBMFF 容器：偏移 4:8 为 ftyp、8:12 为 brand，百度源近年常见）
 _IMAGE_MAGICS = (
     b"\x89PNG\r\n\x1a\n",  # PNG
     b"\xff\xd8\xff",       # JPEG
@@ -196,9 +198,15 @@ _IMAGE_MAGICS = (
 
 
 def _looks_like_image(data):
-    """按魔数粗判响应体是不是图片（HTML/JSON 错误页会被当候选图存盘）。"""
+    """按魔数粗判响应体是不是图片（HTML/JSON 错误页会被当候选图存盘）。
+
+    AVIF 按 brand 精确接纳（headless Chrome 可渲染）；同为 ftyp 容器的
+    HEIC Chromium 不支持，不进白名单——存下来也只会渲染成裂图。
+    """
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return True
+    if data[4:8] == b"ftyp":
+        return data[8:12][:4] in (b"avif", b"avis")
     return data.startswith(_IMAGE_MAGICS)
 
 
@@ -222,7 +230,7 @@ def download_image(url, out_path, max_retries=2):
             req = urllib.request.Request(url, headers={
                 "User-Agent": "content-to-video/1.0",
             })
-            # urlopen 自动跟随重定向；timeout 沿用原来的 30s
+            # urlopen 自动跟随重定向；timeout 30s
             with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
                 # 大小上限：超大响应整段读进内存有 OOM 面
                 cl = resp.headers.get("Content-Length")
@@ -491,6 +499,7 @@ def _filter_title_items(title_items, sids):
 
 
 def main():
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="StepFun 文搜图：根据内容段落标题自动检索配图"
     )
@@ -655,12 +664,21 @@ def main():
         picks = {}
         for pair in args.pick.split(","):
             pair = pair.strip().strip("\"'")
+            if not pair:
+                continue
             if ":" not in pair:
+                # 静默吞掉会让审阅结论无声失效：agent 明明判断了"不采用"，
+                # pick 没生效、候选被当成"未提及"保留，下一轮又出现
+                print(f"[warn] --pick 条目 {pair!r} 缺少冒号分隔（应为 "
+                      f"sid:候选编号，如 seg1:2；0=不采用），已忽略",
+                      file=sys.stderr)
                 continue
             sid, idx = pair.split(":", 1)
             try:
                 picks[sid.strip().strip("\"'")] = int(idx.strip().strip("\"'"))
             except ValueError:
+                print(f"[warn] --pick 条目 {pair!r} 的候选编号不是整数，已忽略",
+                      file=sys.stderr)
                 continue
         images_map, messages = _apply_picks(
             cand_data, picks, args.output, existing_map,

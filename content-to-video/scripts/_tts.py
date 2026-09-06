@@ -6,11 +6,23 @@
 """
 import base64
 import os
+import random
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _audio import apply_speed  # noqa: E402
+
+
+class BadAudioResponseError(Exception):
+    """TTS 响应里没有音频（chat.completions 返回了纯文本）。
+
+    几乎总是 --base-url/--model 指向了不支持 audio 参数的网关或模型，
+    重试 N 次结果完全一样。必须整句放弃并让调用方尽早终止——否则 100 句
+    × 每句 3 次重试 = 300 次 billable 调用全部白烧后才以
+    "All sentences failed" 收场，且中间的报错是迷惑性的
+    'NoneType' object has no attribute 'data'。
+    """
 
 
 def _is_non_retryable(exc):
@@ -20,8 +32,12 @@ def _is_non_retryable(exc):
     400（参数/内容审核拒绝）、401/403（密钥错误/无权限）、404（模型不存在）、
     422（请求不合法）这类错误重试 N 次结果完全一样——每句烧满 3 次重试
     只会浪费额度和时间（100 句 × 无效 key = 300 次无效调用 + 每句多等 6s），
-    直接放弃。连接/超时/429 限流类不带 status_code 或带可重试码，仍走重试。
+    直接放弃。响应不含音频（BadAudioResponseError）同理：端点/模型配错了，
+    换一句再试也是同样的纯文本响应。连接/超时/429 限流类不带 status_code
+    或带可重试码，仍走重试。
     """
+    if isinstance(exc, BadAudioResponseError):
+        return True
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
         return status in (400, 401, 403, 404, 422)
@@ -103,7 +119,17 @@ def synth_sentence(client, text, voice_id, voice_style, out_path,
                 audio=audio_params,
                 timeout=api_timeout,
             )
-            audio_data = completion.choices[0].message.audio.data
+            # 显式检查响应结构而不是直接下钻 .data：端点/模型配错时
+            # message.audio 为 None，AttributeError 不带 status_code 会被
+            # 归为可重试——每句白烧满 3 次 billable 调用才放弃。这里转成
+            # 确定性失败（见 BadAudioResponseError），首次即整句放弃。
+            audio_obj = getattr(completion.choices[0].message, "audio", None)
+            audio_data = getattr(audio_obj, "data", None) if audio_obj else None
+            if not audio_data:
+                raise BadAudioResponseError(
+                    "TTS 响应不含音频（chat.completions 返回了纯文本）——"
+                    "检查 --model/--base-url 是否指向支持 audio 参数的"
+                    " TTS 模型（默认 mimo-v2.5-tts），不要指向普通对话模型")
             audio_bytes = base64.b64decode(audio_data)
             with open(out_path, 'wb') as f:
                 f.write(audio_bytes)
@@ -117,7 +143,9 @@ def synth_sentence(client, text, voice_id, voice_style, out_path,
             print(f"    [{label}][retry {attempt+1}/{max_retries}] {e}",
                   flush=True)
             if attempt < max_retries - 1:
-                time.sleep(2 * (attempt + 1))
+                # 线性退避 + 随机抖动：多 worker 在 429 下若同步休眠同步
+                # 唤醒，会一起撞上限流窗口反复踩踏；抖动把重试时间打散
+                time.sleep(2 * (attempt + 1) + random.uniform(0.0, 1.0))
     else:
         return False, False
 
