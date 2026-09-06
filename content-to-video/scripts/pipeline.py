@@ -48,11 +48,10 @@ from _voices import list_voice_ids  # noqa: E402
 # 核心管线不反向依赖可选脚本，常量统一从 _contracts 取
 from _contracts import (DEFAULT_SPEED, load_segments_source,  # noqa: E402
                         DEFAULT_CHARS_PER_SEC, estimate_sentence_seconds,
-                        is_content_sid)
+                        is_content_sid, validate_speed)
 from _ffmpeg import get_ffmpeg  # noqa: E402
 from _audio import (measure_duration, generate_silence,  # noqa: E402
-                    apply_speed, concat_audio, mix_bgm, validate_speed,
-                    apply_loudnorm)
+                    apply_speed, concat_audio, mix_bgm, apply_loudnorm)
 from _tts import synth_sentence  # noqa: E402
 from build_from_structured import build_parts  # noqa: E402
 from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
@@ -671,9 +670,10 @@ def main():
             "voice_id": sent_voice_id, "voice_style": sent_voice_style,
         })
 
-    # 进度预估（基于平均 3s/句 + 20% 重试余量）
+    # 进度预估（基于平均句时长 + 20% 重试余量；句均 ~13 字，按
+    # DEFAULT_CHARS_PER_SEC 推导，与静音兜底/estimate 同一套假设）
     pending_count = len(pending_tasks)
-    est_per_sentence = 3.0  # 平均 TTS 耗时
+    est_per_sentence = round(13 / DEFAULT_CHARS_PER_SEC, 1)
     est_total = pending_count * est_per_sentence * 1.2 / max(args.workers, 1)
     print(f"[est] {pending_count} sentences to synthesize, ~{est_total:.0f}s "
           f"with up to {args.workers} workers", flush=True)

@@ -82,10 +82,10 @@
     },
     "vertical": {
       "segCard": {
-        "padding": "100px 50px 80px"
+        "padding": "62px 50px 50px"
       },
       "verse": {
-        "windowHeight": 300,
+        "windowHeight": 350,
         "clipPad": 60,
         "linePad": 5
       },
@@ -123,9 +123,10 @@
         "height": 980,
         "top": "auto",
         "centerHorizontal": true,
-        "aspect": "4/3",
-        "marginTop": 48,
-        "borderRadius": 16
+        "aspect": "1.4142/1",
+        "marginTop": 45,
+        "borderRadius": 16,
+        "marginSide": 25
       },
       "subtitle": {
         "height": 216,

@@ -281,18 +281,20 @@ def _check_doc_drift():
         checks.append(("doc_drift:tagline_fallback", True,
                        "跳过：pipeline.py 未匹配到兜底字面量（变量名变了？）"))
 
-    # 模板横屏图片尺寸：SKILL.md / references/rendering.md（第 5 步深度参考，
-    # 图片槽尺寸声明外移至该文件）里声明的 W×H 必须与 template.json 一致
+    # 模板横屏图片尺寸：SKILL.md 与 references/rendering.md 各自声明的 W×H
+    # 都必须与 template.json 一致（逐文件判，避免一份正确就放行另一份漂移）
     try:
         tpl = json.loads(_read("config/template.json"))
         img = tpl["layout"]["landscape"]["image"]
         declared = f'{img["width"]}×{img["height"]}'
-        docs = skill + "\n" + _read("references/rendering.md")
-        passed = declared in docs
+        _docs = (("SKILL.md", skill),
+                 ("references/rendering.md", _read("references/rendering.md")))
+        _missing = [name for name, doc in _docs if declared not in doc]
+        passed = not _missing
         checks.append(("doc_drift:image_size", passed,
                        "" if passed else
-                       f"template.json 横屏图片为 {declared}，SKILL.md / references/rendering.md 未按此声明"
-                       "（改模板或改文档，两处必须同步）"))
+                       f"template.json 横屏图片为 {declared}，但 {', '.join(_missing)} "
+                       f"未按此声明（改模板或改文档，两处必须同步）"))
     except Exception as e:
         checks.append(("doc_drift:image_size", False, f"无法解析 template.json：{e}"))
 
@@ -300,10 +302,33 @@ def _check_doc_drift():
     pitfalls = _read("references/pitfalls.md")
     actual = len(re.findall(r"^### \d+\.", pitfalls, re.M))
     for src_text, pat, what in (
-            (skill, r"(\d+) 条具体踩坑记录", "SKILL.md 踩坑条数"),
+            (skill, r"(\d+) 条踩坑记录", "SKILL.md 踩坑条数"),
             (pitfalls, r"（(\d+) 条踩坑记录）", "pitfalls.md 标题条数")):
         r, err = _declared_count_check(src_text, pat, actual, what)
         checks.append((f"doc_drift:pitfalls_count:{what}", r, err))
+
+    # CLI 选项漂移：SKILL.md 里出现的 `--aspect <val>` 必须都是 run.py argparse
+    # 实际接受的 choices。这是之前 `--aspect vertical` 存活一整个版本的根因——
+    # 没任何门禁交叉校验"文档声明的 CLI 选项 <-> 代码 argparse choices"。
+    try:
+        run_src = _read("scripts/run.py")
+        m = re.search(r'add_argument\("--aspect"[^;]*?choices=\[([^\]]+)\]',
+                       run_src, re.S)
+        if m:
+            choices = [c.strip().strip('"\'') for c in m.group(1).split(",")
+                       if c.strip()]
+            doc_aspects = set(re.findall(r"--aspect\s+([A-Za-z]+)", skill))
+            bad = sorted(doc_aspects - set(choices))
+            passed = not bad
+            checks.append(("doc_drift:cli_aspect_choices", passed,
+                           "" if passed else
+                           f"SKILL.md 声明了 --aspect {bad}，但 argparse choices 只有 {choices}"
+                           "（文档与 CLI 不同步，agent 照抄会 invalid choice）"))
+        else:
+            checks.append(("doc_drift:cli_aspect_choices", True,
+                           "跳过：scripts/run.py 未匹配到 --aspect choices 定义"))
+    except Exception as e:
+        checks.append(("doc_drift:cli_aspect_choices", False, f"无法校验 CLI 选项：{e}"))
 
     # 评估用例条数：SKILL.md 项目结构里声明的条数 == evals.json 实际条数
     try:

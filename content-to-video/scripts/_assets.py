@@ -37,12 +37,13 @@ _LEGACY_CACHE_PATH = os.path.join(os.path.expanduser("~"), ".cache",
 _download_lock = threading.Lock()
 
 
-def _download_to_cache(timeout=15):
+def _download_to_cache(cache_dir, cache_path, timeout=15):
     """下载 GSAP 到共享缓存。原子写入（临时文件 + rename）避免半下载的文件
-    被其他线程/进程当成有效缓存用。
+    被其他线程/进程当成有效缓存用。缓存路径由调用方传入（默认为模块常量，
+    测试注入临时路径用参数、不改写模块全局）。
     """
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=_CACHE_DIR, suffix=".tmp")
+    os.makedirs(cache_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=cache_dir, suffix=".tmp")
     fd_opened = True  # mkstemp 返回的 fd 需要显式关闭/接管，跟踪它的归属
     try:
         req = urllib.request.Request(GSAP_CDN_URL, headers={"User-Agent": "content-to-video/1.0"})
@@ -53,7 +54,7 @@ def _download_to_cache(timeout=15):
         with os.fdopen(fd, "wb") as f:
             fd_opened = False  # 所有权已移交给 fdopen 的 with 块
             f.write(data)
-        os.replace(tmp_path, _CACHE_PATH)
+        os.replace(tmp_path, cache_path)
         return True
     except Exception as e:
         print(f"[warn] GSAP 本地缓存下载失败，本次渲染回退到 CDN 直连：{e}",
@@ -72,10 +73,14 @@ def _download_to_cache(timeout=15):
         return False
 
 
-def ensure_local_gsap(html_output_dir, timeout=15):
+def ensure_local_gsap(html_output_dir, timeout=15,
+                      cache_dir=None, cache_path=None, legacy_cache_path=None):
     """确保 `<html_output_dir>/vendor/gsap.min.js` 存在（HTML 用相对路径
     `vendor/gsap.min.js` 加载它，Hyperframes CLI 渲染时是本地文件读取，
     不再走网络）。
+
+    缓存路径参数（默认取模块常量）：测试需要隔离缓存时用参数注入，
+    不改写模块全局——全局变量从此只读。
 
     返回值：
       - 成功：返回相对路径字符串 `"vendor/gsap.min.js"`，直接用作
@@ -83,6 +88,9 @@ def ensure_local_gsap(html_output_dir, timeout=15):
       - 失败（无法下载且本地也没有缓存）：返回 `None`，调用方应回退到
         `GSAP_CDN_URL`。
     """
+    cache_dir = cache_dir or _CACHE_DIR
+    cache_path = cache_path or _CACHE_PATH
+    legacy_cache_path = legacy_cache_path or _LEGACY_CACHE_PATH
     dest_dir = os.path.join(html_output_dir, "vendor")
     dest_path = os.path.join(dest_dir, "gsap.min.js")
 
@@ -91,23 +99,23 @@ def ensure_local_gsap(html_output_dir, timeout=15):
         return "vendor/gsap.min.js"
 
     with _download_lock:
-        if not (os.path.isfile(_CACHE_PATH) and os.path.getsize(_CACHE_PATH) > 1000):
+        if not (os.path.isfile(cache_path) and os.path.getsize(cache_path) > 1000):
             # 新缓存 miss：先把旧目录（ai-daily-video 时代）的缓存搬过来，
             # 搬不动再走联网下载。
             try:
-                if (os.path.isfile(_LEGACY_CACHE_PATH)
-                        and os.path.getsize(_LEGACY_CACHE_PATH) > 1000):
-                    os.makedirs(_CACHE_DIR, exist_ok=True)
-                    shutil.copyfile(_LEGACY_CACHE_PATH, _CACHE_PATH)
+                if (os.path.isfile(legacy_cache_path)
+                        and os.path.getsize(legacy_cache_path) > 1000):
+                    os.makedirs(cache_dir, exist_ok=True)
+                    shutil.copyfile(legacy_cache_path, cache_path)
             except OSError:
                 pass  # 迁移失败无所谓，下面还有正常的下载路径
-        if not (os.path.isfile(_CACHE_PATH) and os.path.getsize(_CACHE_PATH) > 1000):
-            if not _download_to_cache(timeout=timeout):
+        if not (os.path.isfile(cache_path) and os.path.getsize(cache_path) > 1000):
+            if not _download_to_cache(cache_dir, cache_path, timeout=timeout):
                 return None
 
     os.makedirs(dest_dir, exist_ok=True)
     try:
-        shutil.copyfile(_CACHE_PATH, dest_path)
+        shutil.copyfile(cache_path, dest_path)
     except OSError as e:
         print(f"[warn] 无法拷贝 GSAP 到 {dest_path}: {e}", file=sys.stderr)
         return None

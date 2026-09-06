@@ -33,6 +33,10 @@
 - [22] 深度 review 修复回归组：_tts 残留 sidecar 清理、search_images --pick 审阅决策（0 弃用/越界报错不删候选/未提及保留/已定稿继承）、pipeline --check-env 独立运行、BGM amix normalize=0、run.py --aspect both 双成片、字幕行内透明度不再双重相乘
 
 任何一项失败都会打印 [FAIL] 并以非零码退出。修改上述模块后建议先跑一遍本测试。
+
+结构：
+- 每个 [N] 章节抽成 _test_NN_*()，main() 用 try/except 逐个调用——
+  任一章节崩溃不会阻断后续章节，调试时能拿到全部章节的失败/通过计数。
 """
 import io
 import json
@@ -59,12 +63,26 @@ def check(name, cond, detail=""):
         print(f"  [FAIL] {name} {detail}")
 
 
-def main():
-    print("=== content-to-video selftest ===")
+# 跨章节共享状态：_TPL/_SKILL_ROOT 由 main() 启动时预加载，章节内只读。
+# 让 [18] 之前的章节也能安全访问（万一 [18] 崩溃，[20+] 仍能跑）。
+_SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TPL = None
 
-    # 1. split_sentences
-    from _script_utils import split_sentences
+
+def _load_template():
+    """预加载 template.json（[18]/[20+] 共用），加载失败返回 None。"""
+    global _TPL
+    try:
+        with open(os.path.join(_SKILL_ROOT, "config", "template.json"),
+                  encoding="utf-8") as _f:
+            _TPL = json.load(_f)
+    except Exception:
+        _TPL = None
+
+
+def _test_1_split_sentences():
     print("\n[1] split_sentences")
+    from _script_utils import split_sentences
     s = split_sentences("大家好呀。这是第二句！第三句呀？")
     check("basic terminators", s == ["大家好呀。", "这是第二句！", "第三句呀？"], repr(s))
     s = split_sentences("这是第一句；这是第二句。\n这是第三行。")
@@ -74,7 +92,8 @@ def main():
           len(s) == 1 and s[0] == "短。后面长句子合并进来。", repr(s))
     check("empty input", split_sentences("") == [])
 
-    # 2. build_from_structured（pipeline --source 用的分句/分组库）
+
+def _test_2_build_structured():
     print("\n[2] build_from_structured")
     from _theme import get_accent_palette
     from build_from_structured import build_parts
@@ -159,19 +178,22 @@ def main():
         "opening": "",
         "closing": "",
         "segments": [
-            {"title": "A", "text": "苹果发布了新手机。真棒。"},
-            {"title": "B", "text": "OpenAI 发布了新模型。"},
+            {"title": "A", "text": "苹果发布新手机。真棒。"},
+            {"title": "B", "text": "OpenAI 发布新模型。"},
         ],
     }
     sents3, segs3 = build_parts(bad_src)
     check("independent per-segment split",
-          sents3 == ["苹果发布了新手机。真棒。", "OpenAI 发布了新模型。"], repr(sents3))
+          sents3 == ["苹果发布新手机。真棒。", "OpenAI 发布新模型。"], repr(sents3))
     check("segment indices consistent",
           segs3[0]["start"] == 0 and segs3[0]["end"] == 1
           and segs3[1]["start"] == 1 and segs3[1]["end"] == 2)
 
+
+def _test_2b_dialogue():
     # 2b. 双人对话（dialogue）段落
     print("\n[2b] build_from_structured dialogue（双人对话）")
+    from build_from_structured import build_parts
     dialogue_src = {
         "speakers": {
             "host": {"voice_id": "voiceA", "label": "主播"},
@@ -203,31 +225,48 @@ def main():
 
     # text 和 dialogue 同时提供 / 都不提供 —— 走 _contracts 校验（见 [8]）
 
+
+def _test_2c_flow():
     # 2c. flow 自然叙事模式 + 超长句写作提醒
     print("\n[2c] build_from_structured flow 模式 + 超长句提醒")
-    from build_from_structured import LONG_SENTENCE_CHARS
-    flow_src = dict(src, flow=True)
+    from build_from_structured import LONG_SENTENCE_CHARS, build_parts
+    flow_src = dict({
+        "opening": "大家好，欢迎收看今天的AI日报。",
+        "closing": "感谢收看，明天见。",
+        "segments": [
+            {"title": "A", "text": "第一条新闻内容，值得关注。这是补充信息，也很重要。"},
+            {"title": "B", "text": "第二条新闻内容，同样重要。后续进展，值得跟踪。"},
+        ],
+    }, flow=True)
     _, flow_segs = build_parts(flow_src)
     check("flow: opening agenda defaults on (chips 预告)",
           flow_segs[0].get("agenda") is True, flow_segs[0].get("agenda"))
     check("flow: closing recap defaults off",
           flow_segs[-1].get("recap") is False, flow_segs[-1].get("recap"))
-    flow_src_on = dict(src, flow=True, opening_agenda=True, closing_recap=True)
+    flow_src_on = dict(flow_src, opening_agenda=True, closing_recap=True)
     _, flow_segs_on = build_parts(flow_src_on)
     check("flow: explicit opening_agenda honored",
           flow_segs_on[0].get("agenda") is True)
     check("flow: explicit closing_recap honored",
           flow_segs_on[-1].get("recap") is True)
-    _, default_segs = build_parts(src)
+    default_src = {
+        "opening": "大家好，欢迎收看今天的AI日报。",
+        "closing": "感谢收看，明天见。",
+        "segments": [
+            {"title": "A", "text": "第一条新闻内容，值得关注。这是补充信息，也很重要。"},
+            {"title": "B", "text": "第二条新闻内容，同样重要。后续进展，值得跟踪。"},
+        ],
+    }
+    _, default_segs = build_parts(default_src)
     check("no flow: agenda defaults on (chapters)",
           default_segs[0].get("agenda") is True)
     try:
         from _contracts import validate_segments_source as _vss
-        _vss(dict(src, flow="yes"))
+        _vss(dict(default_src, flow="yes"))
         check("flow: non-bool rejected", False, "no exception")
     except ValueError as e:
         check("flow: non-bool rejected", "flow" in str(e), str(e)[:60])
-    long_sent_src = dict(src, segments=[
+    long_sent_src = dict(default_src, segments=[
         {"title": "长句段",
          "text": "这是一个明显超过四十五个字符上限的超长句子用来触发写作提醒，"
                  "因为一句话念完会喘不过气，字幕也需要切成多行显示才放得下。"}])
@@ -239,6 +278,8 @@ def main():
           "[warn]" in err_buf.getvalue() and "45" in err_buf.getvalue(),
           err_buf.getvalue()[:80])
 
+
+def _test_2d_subtitle_lines():
     # 2d. split_subtitle_lines：字幕显示层二次切行（纯函数，确定性）
     print("\n[2d] _script_utils.split_subtitle_lines")
     from _script_utils import split_subtitle_lines as ssl
@@ -267,9 +308,14 @@ def main():
     chunks = ssl("一" * 60)
     check("ssl: no-punct long hard-splits to <=hard_cap (no overflow)",
           all(len(c) <= 40 for c in chunks) and "".join(chunks) == "一" * 60, chunks)
+
+
+def _test_2e_subtitle_cues():
     # 2e. split_subtitle_cues：每屏最多两行的 cue 分组（纯函数，确定性）
     print("\n[2e] _script_utils.split_subtitle_cues")
     from _script_utils import split_subtitle_cues as ssc
+    long = ("今天我们要讲一个很长的主题，它包含三个部分的内容，"
+            "分别是背景原理和实际应用，我们会逐一展开说明。")
     check("ssc: short sentence single cue", ssc("短句。") == [["短句。"]])
     cues_g = ssc(long)
     check("ssc: every cue has at most 2 lines",
@@ -279,8 +325,9 @@ def main():
     check("ssc: huge sentence splits into multiple cues", len(hcues) >= 2, hcues)
     check("ssc: huge sentence every cue <= 2 lines",
           all(len(g) <= 2 for g in hcues), [len(g) for g in hcues])
-    check("ssc: every line within soft cap x1.5",
-          all(len(l) <= 28 * 1.5 for g in hcues for l in g),
+    # 行宽硬约束（max_chars=28，hard_cap 兜底）——slack 参数已移除
+    check("ssc: every line within hard_cap",
+          all(len(l) <= 28 for g in hcues for l in g),
           [[len(l) for l in g] for g in hcues])
     check("ssc: join preserves original text",
           "".join("".join(g) for g in hcues) == huge)
@@ -299,9 +346,12 @@ def main():
     check("ssc: sparse-punct join preserves original text",
           "".join(sp_flat) == sparse, sp_flat)
 
+
+def _test_3_hyperframes():
     # 3. gen_hyperframes
     print("\n[3] gen_hyperframes")
     from gen_hyperframes import fallback_segments, generate_html
+    from _theme import get_default_accent
     manifest = {
         "sentences": [
             {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
@@ -314,7 +364,6 @@ def main():
     check("fallback chunk size 5", len(segs) == 2
           and all(len(s["sentences"]) <= 5 for s in segs), len(segs))
     check("fallback ids", [s["id"] for s in segs] == ["seg1", "seg2"])
-    from _theme import get_default_accent
     default_accent = get_default_accent()
     check("fallback accent", all(s["accent"] == default_accent for s in segs))
     # 横屏默认 bar（模式已固定按画幅绑定，不可传参）
@@ -432,11 +481,24 @@ def main():
           and f'id="recapchip-closing-{_ag_cap}"' not in html_many)
     check("无 '等共 N 条' 封顶提示行", "等共" not in html_many)
 
+
+def _test_3b_hyperframes_flow():
     # 3b. flow 自然叙事模式渲染：无编号 badge、无 wipe 扫场、开场预告是
     # 轻量 chips（默认生成，竖排编号目录仍不出现）、closing
     # 无 recap、长句 cue 切多行（手写 manifest 也不带 agenda 键，验证
     # gen 层默认值）
     print("\n[3b] gen_hyperframes flow 模式")
+    from gen_hyperframes import generate_html
+    from _theme import get_default_accent
+    default_accent = get_default_accent()
+    manifest = {
+        "sentences": [
+            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
+             "start_time": i * 2.4, "duration": 2.0}
+            for i in range(6)
+        ],
+        "total_duration": 14.5,
+    }
     flow_manifest = {
         **manifest,
         "flow": True,
@@ -474,8 +536,18 @@ def main():
     html_flow_off = generate_html(flow_manifest_off, "audio/combined.wav")
     check("flow: agenda=false 显式关闭 chips 预告",
           'id="chiprow-opening"' not in html_flow_off)
+    manifest_chapters = {
+        **manifest,
+        "segments": [
+            {"id": "opening", "title": "AI 日报", "tagline": "", "body": "",
+             "accent": default_accent, "sentences": manifest["sentences"][:1]},
+            {"id": "news1", "title": "标题一", "tagline": "", "body": "",
+             "accent": "#ffd54f", "sentences": manifest["sentences"][1:4]},
+        ],
+    }
+    html_chapters = generate_html(manifest_chapters, "audio/combined.wav")
     check("chapters: wipe sweep present (control)",
-          'tl.set("#twipe"' in html3)
+          'tl.set("#twipe"' in html_chapters)
     long_cue_manifest = {
         "sentences": [
             {"index": 0, "text": "这是一个特别长的句子，包含很多修饰成分和并列信息、还有顿号列举，"
@@ -490,7 +562,7 @@ def main():
           'lines:["' in cue_zone and '","' in cue_zone, cue_zone[:160])
     check("bar mode: sub-line css present", ".sub-line + .sub-line" in html_long)
     check("preview externalized to preview.js",
-          'src="preview.js"' in html and "__pvUpdate" in html)
+          'src="preview.js"' in html_chapters and "__pvUpdate" in html_chapters)
     pj = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "preview.js"), encoding="utf-8").read()
     check("preview.js gated for headless",
@@ -547,6 +619,8 @@ def main():
     check("bar mode: speaker color css has >= 6 classes",
           ".sub-speaker.spk-5{color:" in html_three_bar)
 
+
+def _test_4_env():
     # 5. _env key priority + model config resolution
     print("\n[4] _env key priority")
     from _env import get_key, resolve_model_config
@@ -583,9 +657,12 @@ def main():
         else:
             os.environ["MIMO_BASE_URL"] = old_url
 
+
+def _test_5_theme_template():
     # 6. theme + template loading
     print("\n[5] theme + template")
     from _theme import get_accent_palette, get_theme_colors, list_theme_names
+    from _template import load_template
     pal = get_accent_palette()
     check("accent palette 8 colors",
           len(pal) == 8 and all(c.startswith("#") for c in pal))
@@ -604,12 +681,13 @@ def main():
         check(f"theme '{name}' has all required keys",
               _theme_required_keys <= set(colors),
               f"missing: {_theme_required_keys - set(colors)}")
-    from _template import load_template
     tpl = load_template()
     check("template layout keys", {"landscape", "vertical"} <= set(tpl["layout"]))
     check("vertical body maxWidth set",
           tpl["layout"]["vertical"]["body"].get("maxWidth", 0) > 0)
 
+
+def _test_6_verify_render():
     # 7. verify_render parsing
     print("\n[6] verify_render")
     from verify_render import parse_ffmpeg_info
@@ -622,9 +700,12 @@ def main():
     check("verify parse duration", dur is not None and abs(dur - 42.03) < 0.001, dur)
     check("verify parse codecs", video == "h264" and audio == "aac", (video, audio))
 
+
+def _test_7_audio_tts():
     # 8. _audio + _tts
     print("\n[7] _audio + _tts")
-    from _audio import build_atempo_filter
+    from _audio import build_atempo_filter, build_loudnorm_filter
+    from _tts import synth_sentence
     check("atempo 1.0 -> None", build_atempo_filter(1.0) is None)
     check("atempo 1.5", build_atempo_filter(1.5) == "atempo=1.5",
           build_atempo_filter(1.5))
@@ -650,15 +731,12 @@ def main():
         except ValueError:
             check(f"atempo rejects non-finite speed {bad_speed}", True)
 
-    from _audio import build_loudnorm_filter
     check("loudnorm filter default",
           build_loudnorm_filter() == "loudnorm=I=-16.0:TP=-1.5:LRA=11",
           build_loudnorm_filter())
     check("loudnorm filter custom",
           build_loudnorm_filter(-14) == "loudnorm=I=-14:TP=-1.5:LRA=11",
           build_loudnorm_filter(-14))
-
-    from _tts import synth_sentence
 
     class _FakeFailClient:
         class chat:
@@ -673,10 +751,14 @@ def main():
     check("synth failure returns ok=False without retries", _synth_ok is False)
     check("synth failure returns speed_applied=False", _synth_spd is False)
 
+
+def _test_8_contracts():
     # 9. _contracts
     print("\n[8] _contracts")
     from _contracts import (validate_segments_source, validate_timing_manifest,
                             validate_images_json)
+    from _voices import list_voice_ids, is_valid_voice_id
+    from build_from_structured import build_parts
     good_src = {"opening": "好。", "segments": [{"title": "A", "text": "内容。"}]}
     check("segments source valid",
           validate_segments_source(good_src) is good_src)
@@ -746,13 +828,11 @@ def main():
             check("segments source rejects bad speed/voice value", True)
 
     # 音色注册表 + 段落级 voice_id/voice_style 透传（--source 路径）
-    from _voices import list_voice_ids, is_valid_voice_id
     check("voice registry has 8 presets",
           len(list_voice_ids()) == 8, list_voice_ids())
     check("voice registry valid id",
           is_valid_voice_id("冰糖") and is_valid_voice_id("Mia"))
     check("voice registry rejects unknown", not is_valid_voice_id("fake"))
-    from build_from_structured import build_parts
     seg_voice_src = {"segments": [
         {"title": "A", "text": "内容。", "voice_id": "茉莉", "voice_style": "温柔"},
     ]}
@@ -784,6 +864,8 @@ def main():
     except ValueError:
         check("images json rejects non-string", True)
 
+
+def _test_9_render_watch():
     # 10. render_watch.resolve_command
     print("\n[9] render_watch.resolve_command")
     from render_watch import resolve_command
@@ -809,6 +891,8 @@ def main():
                   os.path.basename(r2[0]).lower() in ("cmd.exe", "cmd")
                   and r2[1] == "/c", r2)
 
+
+def _test_10_search_images():
     # 11. search_images deterministic relevance (no LLM)
     print("\n[10] search_images deterministic relevance")
     from search_images import relevance_score
@@ -820,42 +904,7 @@ def main():
     check("relevance zero on empty title", relevance_score("", "任意摘要") == 0)
 
 
-    # extract_titles_from_segments_source：直接从 segments_source.json 取标题
-    # 的路径（不经过 timing_manifest.json），是 run.py 能把第 3 步 TTS 和
-    # 第 4 步配图并行跑的关键——必须跟 build_from_structured.py 实际分配的
-    # id 完全一致，否则并行跑出来的 images.json 里的 key 会跟 gen_hyperframes.py
-    # 从 manifest 读到的 segment id 对不上。
-    from _titles import extract_titles_from_segments_source
-    from build_from_structured import build_parts
-    import tempfile as _tempfile
-
-    titles_src = {
-        "opening": "开场白。", "closing": "结尾语。",
-        "speakers": {"甲": {"voice_id": "冰糖"}, "乙": {"voice_id": "苏打"}},
-        "segments": [
-            {"title": "第一条新闻", "text": "内容一。"},
-            {"title": "双人对话段落", "dialogue": [
-                {"speaker": "甲", "text": "你怎么看？"},
-                {"speaker": "乙", "text": "我觉得不错。"},
-            ]},
-            {"title": "第三条新闻", "text": "内容三。"},
-        ],
-    }
-    with _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
-                                       encoding="utf-8") as f:
-        json.dump(titles_src, f, ensure_ascii=False)
-        titles_src_path = f.name
-    try:
-        direct = extract_titles_from_segments_source(titles_src_path)
-        _, seg_config = build_parts(titles_src)
-        real = [{"id": s["id"], "title": s["title"]} for s in seg_config
-                if s["id"].startswith(("news", "seg"))]
-        check("extract_titles_from_segments_source id/title 与 "
-              "build_from_structured 实际分配的完全一致（含 dialogue 段落）",
-              direct == real, f"{direct} vs {real}")
-    finally:
-        os.unlink(titles_src_path)
-
+def _test_12_budget():
     # 12. budget（时长预算：估算函数）
     print("\n[12] budget")
     import tempfile
@@ -893,6 +942,8 @@ def main():
         check("budget estimate reports sentence count",
               "共 4 句" in out, out)
 
+
+def _test_14_gen_charts():
     # 15. gen_charts（配图方式 C：图表；无 matplotlib 时跳过）
     print("\n[14] gen_charts")
     try:
@@ -904,6 +955,7 @@ def main():
         print("  [SKIP] 未安装 matplotlib，跳过 gen_charts.py 测试"
               "（图表配图是可选功能，不影响核心流程）")
     else:
+        import tempfile
         from gen_charts import render_chart
         from matplotlib.image import imread
 
@@ -994,12 +1046,14 @@ def main():
                   (cw_px, ch_px) == (1200, 900), f"{cw_px}×{ch_px}")
             os.remove(curve_path)
 
+
+def _test_15_split_series_coverage():
     # 16. split_series / budget calibrate
     # 这四个都是纯离线逻辑（不依赖真实 TTS/渲染 API），加进来补上上次
     # review 发现的一个真实教训：--on-fail silence 的 resume 标记丢失 bug
     # 是手工构造场景才抓到的，如果当时就有这层覆盖，本该在第一版就被拦住。
     print("\n[15] split_series / budget calibrate")
-    import tempfile as _tf16
+    import tempfile
 
     # 16b. split_series.parse_sections / plan_episodes
     from split_series import parse_sections, plan_episodes
@@ -1039,8 +1093,8 @@ def main():
           sorted(flat_titles_n) == sorted(["一", "二", "三"]), flat_titles_n)
 
     # 16g. split_series: _series_meta 只在多集时附加，且 prev/next 链接正确
+    from split_series import write_skeleton
     with tempfile.TemporaryDirectory() as td:
-        from split_series import write_skeleton
         ep_a = [("集A", "内容A", 5.0)]
         ep_b = [("集B", "内容B", 5.0)]
         out_a = os.path.join(td, "s1.json")
@@ -1166,14 +1220,16 @@ def main():
     check("search_images._filter: no sids -> no filtering",
           _f3 == _ti and _u3 == [], (_f3, _u3))
 
+
+def _test_17f_review_fix():
     # ── 17f. 外部 review 修复的回归防线 ──────────────────────────────
     # 这组断言固化 2026-09 那轮深度 review 修掉的缺陷。每条都对应一个
     # 真实故障场景，不是"看着该有"的形式化检查。
     print("\n[17f] review-fix regression guards")
-    _skill_root17 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _skill_root = _SKILL_ROOT
 
     def _src(name):
-        with open(os.path.join(_skill_root17, "scripts", name),
+        with open(os.path.join(_skill_root, "scripts", name),
                   encoding="utf-8") as _f:
             return _f.read()
 
@@ -1246,9 +1302,11 @@ def main():
     check("news/seg 前缀判定不再硬编码散落（统一走 is_content_sid）",
           not _hardcoded, _hardcoded)
 
+
+def _test_18_anti_regression():
     # ── 18. 防回归断言（源码级固化）────────────────────────
     print("\n[18] anti-regression")
-    _skill_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _skill_root = _SKILL_ROOT
 
     def _read_src(rel):
         with open(os.path.join(_skill_root, rel), encoding="utf-8") as f:
@@ -1272,25 +1330,23 @@ def main():
 
     # 18b. 模板字段消费完整性（layout 叶子字段必须被 gen_hyperframes 引用，
     # 防 chip.padding/numSize 这类"改模板不生效"的死字段复发）
-    with open(os.path.join(_skill_root, "config/template.json"),
-              encoding="utf-8") as f:
-        _tpl = json.load(f)
     _gh_src = _read_src("scripts/gen_hyperframes.py")
-    _lay_keys = set()
-    for _aspect in ("landscape", "vertical"):
-        for _blk_cfg in _tpl["layout"][_aspect].values():
-            _lay_keys.update(_blk_cfg.keys())
-    _dead = [k for k in sorted(_lay_keys) if ('"%s"' % k) not in _gh_src]
-    check("template layout keys all consumed by gen_hyperframes",
-          not _dead, f"dead keys: {_dead}")
-    # agenda 字号收缩刻度必须有序（shrinkThreshold <= shrinkMax，
-    # 相等 = 到达 shrinkMax 前不收缩，如竖屏模板 8/8），
-    # 否则线性插值区间为负、字号语义失效
-    _sm_mono = all(
-        _tpl["layout"][a]["agenda"]["shrinkThreshold"]
-        <= _tpl["layout"][a]["agenda"]["shrinkMax"]
-        for a in ("landscape", "vertical"))
-    check("template agenda shrinkThreshold <= shrinkMax", _sm_mono)
+    if _TPL is not None:
+        _lay_keys = set()
+        for _aspect in ("landscape", "vertical"):
+            for _blk_cfg in _TPL["layout"][_aspect].values():
+                _lay_keys.update(_blk_cfg.keys())
+        _dead = [k for k in sorted(_lay_keys) if ('"%s"' % k) not in _gh_src]
+        check("template layout keys all consumed by gen_hyperframes",
+              not _dead, f"dead keys: {_dead}")
+        # agenda 字号收缩刻度必须有序（shrinkThreshold <= shrinkMax，
+        # 相等 = 到达 shrinkMax 前不收缩，如竖屏模板 8/8），
+        # 否则线性插值区间为负、字号语义失效
+        _sm_mono = all(
+            _TPL["layout"][a]["agenda"]["shrinkThreshold"]
+            <= _TPL["layout"][a]["agenda"]["shrinkMax"]
+            for a in ("landscape", "vertical"))
+        check("template agenda shrinkThreshold <= shrinkMax", _sm_mono)
 
     # 18c. images.json 的 autoplay 必须被 gen_hyperframes 消费（防死字段复发）
     import tempfile as _tf
@@ -1330,6 +1386,8 @@ def main():
             check("video autoplay defaults to true", "autoplay" in _v1.group(0))
             check("video autoplay:false is honored", "autoplay" not in _v2.group(0))
 
+
+def _test_19_wcag():
     # ── 19. WCAG 对比度全组合断言─────────────────────────
     # tagline 色（浅色主题 _darken(accent) / 深色主题 _mix(accent,white,0.62)）
     # 对全调色板 × 全主题背景渐变最坏段的对比度。tagline 字号横竖屏
@@ -1337,10 +1395,11 @@ def main():
     # 余量大（实测 10+）按正文 AA 4.5 卡。调色板/主题/混色函数任何一处
     # 改动，这里自动重新全组合验证。
     print("\n[19] WCAG contrast (tagline x palette x themes)")
+    import re as _re
     from _theme import (darken as _darken, hex_to_rgb01 as _hex_to_rgb01,
                         relative_luminance as _relative_luminance,
                         mix as _mix)
-    from _theme import get_theme_colors, list_theme_names
+    from _theme import get_theme_colors, get_accent_palette, list_theme_names
 
     def _contrast_ratio(c1, c2):
         l1 = _relative_luminance(c1)
@@ -1379,7 +1438,17 @@ def main():
                 _wcag_fail += 1
     check("WCAG tagline all combos pass", _wcag_fail == 0)
 
+
+def _test_20_check_series():
     # ── 20. check_series.find_drifts（系列一致性纯函数）────────────
+    # ── 20a. main() 内不得局部 import math（真回归）────────
+    # ── 20b. 竖屏 cue 行宽必须按画幅收紧────────────────
+    # ── 20c. 竖屏 verse 句子流结构与滚动参照系 ───────────────
+    # ── 20c2. 横屏图片框 √2:1────────────────────
+    # ── 20c3. 横屏配图段内容框独立于标题框 ─────────────────────────
+    # ── 20d. bar 形态（经典形式）：横屏固定模式 ─────────────────
+    # ── 20e. portrait 紧凑竖屏（3:4，1080x1440）─────────────────
+    # ── 20f. 模式固定按画幅绑定：横屏 bar、竖屏 verse ────────────
     print("\n[20] check_series.find_drifts")
     from check_series import find_drifts
     check("single episode: nothing to compare",
@@ -1406,13 +1475,9 @@ def main():
           find_drifts([{"dir": "a", "flow": None},
                        {"dir": "b", "flow": False}]) == [])
 
-    # ── 20a. main() 内不得局部 import math（真回归）────────
-    # 防回归：main() 内局部 import math 会把 math 变成局部名，导致更早
-    # 执行的 gap 校验 UnboundLocalError（TTS 路径才触发，selftest 不走
-    # argparse 分支）。源码级断言：main 函数体内无 import math。
     print("\n[20a] no local import math in main()")
     import ast as _ast
-    with open(os.path.join(_skill_root, "scripts", "pipeline.py"),
+    with open(os.path.join(_SKILL_ROOT, "scripts", "pipeline.py"),
               encoding="utf-8") as _pf:
         _tree = _ast.parse(_pf.read())
     _main_fn = next(_n for _n in _tree.body
@@ -1424,42 +1489,37 @@ def main():
     check("pipeline.main() has no local 'import math'",
           not _local_math_imports)
 
-    # ── 20b. 竖屏 cue 行宽必须按画幅收紧（cap22/slack1.0）───────────────
+    # ── 20b. 竖屏 cue 行宽必须按画幅收紧────────────────
     # 竖屏 verse 物理行宽 ≈22 字（980px/40px）。若调用点回退到横屏默认
-    # （28 字 + slack1.5 → 最长行 42 字），行数据会超物理宽度。
-    # 以前这条断言直接 grep 源码里的 `_sub_cap = 22 if aspect == "vertical"
-    # else 28` 字符串——那是"断言实现写法"，不是"断言行为"：把数值收口到
-    # 一个共用函数（等价重构）也会红，反而阻碍正常的去重。改成行为断言：
+    # （28 字/行）也会超物理宽度。改成行为断言：
     # 直接问共用函数要参数，再校验两个调用点确实接了这份参数。
+    # （旧 slack 参数已从 subtitle_params_for 移除——现在只校验 max_chars/hard_cap）
     from _script_utils import subtitle_params_for as _sub_params
-    # 模式已按画幅绑定，切分参数只按画幅区分
     _vp = _sub_params("vertical")
     _lp = _sub_params("landscape")
-    check("vertical subtitle uses aspect-strict cap (22/1.0)",
-          (_vp["max_chars"], _vp["slack"], _vp["hard_cap"]) == (22, 1.0, 22)
-          and (_lp["max_chars"], _lp["slack"], _lp["hard_cap"]) == (28, 1.5, 34),
+    check("vertical subtitle uses aspect-strict cap (22/22)",
+          (_vp["max_chars"], _vp["hard_cap"]) == (22, 22)
+          and (_lp["max_chars"], _lp["hard_cap"]) == (28, 34),
           (_vp, _lp))
 
     # 消费者（gen_hyperframes）必须从 subtitle_params_for 取参数——切行
     # 参数唯一权威来源的回归防线，比逐行 grep 数值更抗重构。
-    with open(os.path.join(_skill_root, "scripts", "gen_hyperframes.py"),
+    with open(os.path.join(_SKILL_ROOT, "scripts", "gen_hyperframes.py"),
               encoding="utf-8") as _gf:
         _gen_src = _gf.read()
     check("gen_hyperframes 从 subtitle_params_for 取切分参数",
           "subtitle_params_for(" in _gen_src)
 
     # ── 20c. 竖屏 verse 句子流结构与滚动参照系 ───────────────
-    # verse-clip 无定位时 verse-line.offsetTop 相对
-    # seg-card（≈1500px），滚动公式恒被钳到段落尾部——第一句永远在
-    # 窗口外。断言 clip 定位存在 + verse 钉底（所有段落上边界齐平，
-    # 标题行数差异由图片弹性高度吸收）+ 开场/收尾标题垂直居中。
     import gen_hyperframes as _gh2
-    # 竖屏几何断言全部从模板推导（与 gen_hyperframes 同一来源）——
-    # 改 template.json 不该再牵动本文件
+    if _TPL is None:
+        return
+    _tpl = _TPL
     _tpl_v = _tpl["layout"]["vertical"]
     _v_pad_t = _tpl_v["segCard"]["padding"]
     _v_ar_t = _tpl_v["image"]["aspect"]
     _v_mt_t = _tpl_v["image"]["marginTop"]
+    _v_ms_t = _tpl_v["image"].get("marginSide", 0)
     _v_vh_t = _tpl_v["verse"]["windowHeight"]
     _v_vc_t = _tpl_v["verse"]["clipPad"]
     _vman = {
@@ -1491,10 +1551,11 @@ def main():
           '[data-aspect="vertical"] .verse{position:static!important' in _vhtml
           and 'margin-top:auto!important' in _vhtml)
     check("vertical image: template-driven slot (compact padding + "
-          "aspect + margin-top)",
+          "aspect + margin-top + margin-side)",
           f'padding:{_v_pad_t}!important' in _vhtml
           and f'height:auto!important;aspect-ratio:{_v_ar_t}!important' in _vhtml
-          and f'flex:0 1 auto!important;margin:{_v_mt_t}px 0 0!important' in _vhtml)
+          and f'flex:0 1 auto!important;margin:{_v_mt_t}px 0 0 -{_v_ms_t}px!important' in _vhtml
+          and f'width:calc(100% + {_v_ms_t * 2}px)!important' in _vhtml)
     check("vertical verse: breathing padding + scroll anchor synced "
           "(first/last line clear of mask fade)",
           f'padding:{_v_vc_t}px 0' in _vhtml
@@ -1526,7 +1587,7 @@ def main():
           'sub_mode == "verse" and has_image' in _gen_src)
 
     # ── 20c2. 横屏图片框 √2:1（整屏垂直居中）────────────────────
-    # 槽 910×644（左右各距屏 25px、910/√2 ≈ 644）：4:3 生图 contain
+    # 槽 910×644（左右各距屏 25px、910/√2  644）：4:3 生图 contain
     # 后左右留边恰约 25px；槽左缘 985，与正文卡（左 50、宽 910）间
     # 距 sideGap 25px。垂直居中相对整个画面：top = 1080/2 = 540——
     # 已知取舍：两行标题（底 260）会与图上缘 218 轻微交叠，单行标题
@@ -1679,6 +1740,8 @@ def main():
     check("default: vertical resolves to verse",
           'class="verse"' in _def_v and 'class="sub-bar"' not in _def_v)
 
+
+def _test_20c_manifest():
     # ── 20c. timing_manifest segments 契约（原 20b：与竖屏字幕节重号）──
     # gen_hyperframes 对 seg["sentences"] 直接下标访问，缺失时炸裸
     # KeyError；契约层应先报对人（隐性必填，手写 fixture 易踩）
@@ -1699,6 +1762,8 @@ def main():
     except ValueError as e:
         check("segment missing sentences rejected", "sentences" in str(e), str(e))
 
+
+def _test_21_wcag_ext():
     # ── 21. WCAG 扩展：字幕层/说话人/序号圆/正文层────────
     # [19] 只覆盖 tagline；这里把渲染 HTML 里其余"文字叠底色"色对全部
     # 锁住。字号依据：字幕 46/40px、说话人 =字幕一半 23/20px bold、
@@ -1706,6 +1771,8 @@ def main():
     # 标准（bold ≥18.66px），按大字 AA 3.0 卡。说话人色组与序号数字色
     # 引用 gen_hyperframes 模块常量（单一数据源，改色自动跟进断言）。
     print("\n[21] WCAG extended (sub/speaker/agenda-num/body)")
+    import re as _re
+    from _theme import get_theme_colors, get_accent_palette, list_theme_names
 
     def _hex01(h):
         h = h.lstrip("#")
@@ -1749,6 +1816,7 @@ def main():
         return tuple(fg[i] * fg[3] + bg[i] * (1 - fg[3]) for i in range(3))
 
     import gen_hyperframes as _gh19  # [21] 说话人/序号配色常量的家
+    _hex6 = _re.compile(r"#[0-9a-fA-F]{6}")
     _wcag_ext_fail = 0
     for _tname in list_theme_names():
         _tc = get_theme_colors(_tname)
@@ -1800,6 +1868,8 @@ def main():
             _wcag_ext_fail += 1
     check("WCAG extended all combos pass", _wcag_ext_fail == 0)
 
+
+def _test_22_review_fix():
     # 22. 深度 review 修复回归组（批次 A-D 修复的防退化沉淀）
     print()
     print("[22] review-fix regression coverage")
@@ -1917,9 +1987,26 @@ def main():
     # 22f 字幕 DOM 逻辑按画幅隔离：verse（竖屏）输出不含 sub-bar 相关
     # JS/DOM（含行透明度 lop*op 双重相乘那套逻辑）；bar（横屏）输出则
     # 完整携带
-    _verse_dom_html = _gh2.generate_html(manifest, "audio/combined.wav",
-                                         width=1080, height=1440,
-                                         aspect="portrait")
+    import gen_hyperframes as _gh22f
+    manifest_basic = {
+        "sentences": [
+            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
+             "start_time": i * 2.4, "duration": 2.0}
+            for i in range(6)
+        ],
+        "total_duration": 14.5,
+    }
+    _verse_dom_html = _gh22f.generate_html(manifest_basic, "audio/combined.wav",
+                                           width=1080, height=1440,
+                                           aspect="portrait")
+    long_cue_manifest = {
+        "sentences": [
+            {"index": 0, "text": "这是一个特别长的句子，包含很多修饰成分和并列信息、还有顿号列举，"
+                                "让观众一口气读完会很累。", "start_time": 0.0, "duration": 5.0},
+        ],
+        "total_duration": 5.0,
+    }
+    html_long = _gh22f.generate_html(long_cue_manifest, "audio/combined.wav")
     check("verse mode: sub-bar DOM/JS logic absent",
           "rows[r].style.opacity" not in _verse_dom_html
           and "subEls" not in _verse_dom_html
@@ -1935,12 +2022,16 @@ def main():
     check("gen_hyperframes imports get_ffmpeg",
           "from _ffmpeg import get_ffmpeg" in _gh22)
 
+
+def _test_23_review_fix_guards():
     # ── 23. 本轮修复的守护断言（英文断句 / .env 编码 / wrap_numbers /
     # TTS fail-fast / WAV 样本精确时长 / sid+accent 契约）────────────
     print("\n[23] review-fix guards")
+    import tempfile
 
     # 23a 英文句终符：中英混合稿的英文句子能被切开，小数/缩写/省略号/
     # 人名首字母不被误切；纯中文行为不变
+    from _script_utils import split_sentences
     s = split_sentences("OpenAI released GPT-5. It costs $20 per month. Really!")
     check("en: ASCII .!? split mixed-content sentences",
           s == ["OpenAI released GPT-5.", "It costs $20 per month.", "Really!"],
@@ -1981,18 +2072,32 @@ def main():
     _tdir23 = tempfile.TemporaryDirectory()
     _tmpdir = _tdir23.name
 
-    # 23c wrap_numbers：esc() 产生的数字字符引用（&#39;）里的数字不被误包，
+    # 23c wrap_numbers：esc() 产生的数字字符引用（&#39;）整条跳过不被误包，
     # 正常文本里的数字照常包裹
+    import re as _re23
     from gen_hyperframes import esc, wrap_numbers
-    wrapped = wrap_numbers(esc("Apple's 5G chip costs $399"), "#4fc3f7")
+    _acc = "#4fc3f7"
+    _esc_src = esc("Apple's 5G chip costs $399")
+    wrapped = wrap_numbers(_esc_src, _acc)
+    # 不变量一：实体内部不得插入任何标签（`&#` 到 `;` 之间不能出现 `<`）。
+    # 注意"剥掉 span 后与原文本相等"是**无效**不变量——插标签不改变字符
+    # 序列，只改变浏览器看到的 token 划分，剥完照样相等。
     check("wrap_numbers skips numeric char refs",
-          "&#<span" not in wrapped and "<span" in wrapped
-          and ">39</span>" not in wrapped, wrapped)
+          "&#39;" in wrapped
+          and _re23.search(r"&#[^;]*<", wrapped) is None
+          and "<span" in wrapped, wrapped)
+    # 不变量二：esc() 产出的每个数字实体在产物中出现次数不变（旧 bug 下
+    # `&#39;` 被拆成 `&#3<…>9</span>;`，计数从 1 掉到 0）
+    _ents = _re23.findall(r"&#\d+;", _esc_src)
+    check("wrap_numbers 不拆开 HTML 实体（每个 &#N; 出现次数不变）",
+          bool(_ents) and all(wrapped.count(e) == _esc_src.count(e)
+                              for e in _ents),
+          f"{_ents} -> {wrapped}")
     check("wrap_numbers still wraps plain numbers",
-          '<span class="num-accent"' in wrap_numbers("增长15亿", "#4fc3f7"))
+          '<span class="num-accent"' in wrap_numbers("增长15亿", _acc))
 
     # 23d _tts 无音频响应 fail-fast：BadAudioResponseError 归为确定性失败
-    from _tts import BadAudioResponseError, _is_non_retryable
+    from _tts import BadAudioResponseError, _is_non_retryable, synth_sentence
     check("tts: bad audio response is non-retryable",
           _is_non_retryable(BadAudioResponseError("no audio")))
     class _FakeClient:
@@ -2159,6 +2264,8 @@ def main():
         check("run.py: 缺图分支调用了分流函数",
               "_split_missing_by_candidates(" in _run_src23g)
 
+
+def _test_25_gating():
     # 25. 门控摘要口径（wiki 自进化体系已于 1.5.51 奥卡姆剃刀砍除；
     # parse_summary_totals 内联进 dev/check.py，这里钉住接线与语义）
     print("\n[25] 门控摘要口径")
@@ -2178,7 +2285,7 @@ def main():
     # 它俩都在本次改造之前就存在，但"零覆盖"这条结论同样成立。扫描报出来是
     # 线索，既然扫到了就没理由绕过去（见 patterns/p11）。
     import urllib.request as _urlreq25
-    # run_eval/_assets 在 dev/，补一条路径（wiki 段删除后这里只剩 scripts/）
+    # run_eval 在 dev/，补一条路径（_assets 在 scripts/，由顶部 sys.path 覆盖）
     _DEV_DIR25 = os.path.abspath(os.path.join(HERE, "..", "dev"))
     if _DEV_DIR25 not in sys.path:
         sys.path.insert(0, _DEV_DIR25)
@@ -2280,15 +2387,17 @@ def main():
           _AS25.GSAP_VERSION in _AS25.GSAP_CDN_URL, _AS25.GSAP_CDN_URL)
 
     _ouo25 = _urlreq25.urlopen
-    _ocd25, _ocp25, _olp25 = (_AS25._CACHE_DIR, _AS25._CACHE_PATH,
-                              _AS25._LEGACY_CACHE_PATH)
     try:
         with _tf25.TemporaryDirectory() as _td25:
+            # 缓存路径走参数注入（_assets 的模块全局保持只读，不再改写）
             _cache25 = os.path.join(_td25, "cache")
-            _AS25._CACHE_DIR = _cache25
-            _AS25._CACHE_PATH = os.path.join(_cache25, "gsap.min.js")
-            _AS25._LEGACY_CACHE_PATH = os.path.join(_td25, "legacy",
-                                                    "gsap.min.js")
+            _cpath25 = os.path.join(_cache25, "gsap.min.js")
+            _legacy25 = os.path.join(_td25, "legacy", "gsap.min.js")
+
+            def _gsap25(out_dir, **_kw):
+                return _AS25.ensure_local_gsap(
+                    out_dir, cache_dir=_cache25, cache_path=_cpath25,
+                    legacy_cache_path=_legacy25, **_kw)
 
             # ① 快路径：输出目录已备好 → 直接复用，不拷缓存也不联网
             _out1 = os.path.join(_td25, "out1", "vendor")
@@ -2302,51 +2411,92 @@ def main():
 
             _urlreq25.urlopen = _no_net25
             check("_assets: 已备好的输出目录直接复用（不重新拷贝、不联网）",
-                  _AS25.ensure_local_gsap(os.path.join(_td25, "out1"))
-                  == "vendor/gsap.min.js")
+                  _gsap25(os.path.join(_td25, "out1")) == "vendor/gsap.min.js")
 
             # ② 下载内容过小（CDN 返回错误页）→ 拒绝，不留半成品
             _urlreq25.urlopen = lambda *_a, **_k: _FakeResp25(
                 b"<html>404</html>")
-            _r_small = _AS25.ensure_local_gsap(
-                os.path.join(_td25, "out2"), timeout=1)
+            _r_small = _gsap25(os.path.join(_td25, "out2"), timeout=1)
             _tmps25 = [n for n in os.listdir(_cache25) if n.endswith(".tmp")] \
                 if os.path.isdir(_cache25) else []
             check("_assets: 下载内容 <1000 字节判为无效（不写入缓存）",
-                  _r_small is None and not os.path.isfile(_AS25._CACHE_PATH))
+                  _r_small is None and not os.path.isfile(_cpath25))
             check("_assets: 下载失败后不留 .tmp 残留",
                   not _tmps25, _tmps25)
 
             # ③ 无缓存且网络不可用 → None，由调用方回退 CDN（尽力而为）
             _urlreq25.urlopen = _boom25
             check("_assets: 无缓存且下载失败时返回 None（调用方回退 CDN）",
-                  _AS25.ensure_local_gsap(os.path.join(_td25, "out3"),
-                                          timeout=1) is None)
+                  _gsap25(os.path.join(_td25, "out3"), timeout=1) is None)
 
             # ④ 缓存命中 → 拷到输出目录
             os.makedirs(_cache25, exist_ok=True)
-            with open(_AS25._CACHE_PATH, "w", encoding="utf-8") as _f25:
+            with open(_cpath25, "w", encoding="utf-8") as _f25:
                 _f25.write("/* cached gsap */" * 300)
             _out4 = os.path.join(_td25, "out4")
             check("_assets: 缓存命中时拷贝到输出目录",
-                  _AS25.ensure_local_gsap(_out4) == "vendor/gsap.min.js"
+                  _gsap25(_out4) == "vendor/gsap.min.js"
                   and os.path.getsize(os.path.join(_out4, "vendor",
                                                    "gsap.min.js")) > 1000)
 
             # ⑤ 旧路径缓存迁移：老用户不必重新联网下载一次
-            os.remove(_AS25._CACHE_PATH)
-            os.makedirs(os.path.dirname(_AS25._LEGACY_CACHE_PATH))
-            with open(_AS25._LEGACY_CACHE_PATH, "w", encoding="utf-8") as _f25:
+            os.remove(_cpath25)
+            os.makedirs(os.path.dirname(_legacy25))
+            with open(_legacy25, "w", encoding="utf-8") as _f25:
                 _f25.write("/* legacy gsap */" * 300)
             _urlreq25.urlopen = _boom25      # 迁移成功就不该走到联网
             _out5 = os.path.join(_td25, "out5")
             check("_assets: 旧缓存路径会被迁移过来（迁移成功就不联网）",
-                  _AS25.ensure_local_gsap(_out5) == "vendor/gsap.min.js"
-                  and os.path.isfile(_AS25._CACHE_PATH))
+                  _gsap25(_out5) == "vendor/gsap.min.js"
+                  and os.path.isfile(_cpath25))
     finally:
         _urlreq25.urlopen = _ouo25
-        _AS25._CACHE_DIR, _AS25._CACHE_PATH = _ocd25, _ocp25
-        _AS25._LEGACY_CACHE_PATH = _olp25
+
+
+def main():
+    print("=== content-to-video selftest ===")
+    # 预加载跨章节共享状态：[18]+ 用 template.json，[18] 崩了也不该阻断 [20+]
+    _load_template()
+
+    # 每个章节独立 try/except——任一崩溃只计 1 个失败 + 后续章节照常跑，
+    # 不再因一个 assertion 引发 traceback 而吞掉全部剩余的章节结果。
+    _sections = [
+        _test_1_split_sentences,
+        _test_2_build_structured,
+        _test_2b_dialogue,
+        _test_2c_flow,
+        _test_2d_subtitle_lines,
+        _test_2e_subtitle_cues,
+        _test_3_hyperframes,
+        _test_3b_hyperframes_flow,
+        _test_4_env,
+        _test_5_theme_template,
+        _test_6_verify_render,
+        _test_7_audio_tts,
+        _test_8_contracts,
+        _test_9_render_watch,
+        _test_10_search_images,
+        _test_12_budget,
+        _test_14_gen_charts,
+        _test_15_split_series_coverage,
+        _test_17f_review_fix,
+        _test_18_anti_regression,
+        _test_19_wcag,
+        _test_20_check_series,
+        _test_20c_manifest,
+        _test_21_wcag_ext,
+        _test_22_review_fix,
+        _test_23_review_fix_guards,
+        _test_25_gating,
+    ]
+    for _fn in _sections:
+        try:
+            _fn()
+        except Exception as _e:
+            global failed
+            failed += 1
+            RESULTS.append((f"{_fn.__name__} crashed", False))
+            print(f"  [FAIL] {_fn.__name__} crashed: {_e}")
 
     print(f"\n=== {passed} passed, {failed} failed ===")
     summary = {

@@ -240,7 +240,7 @@ def _wrap_width(text, width, hard_cap):
     return lines
 
 
-def split_subtitle_lines(text, max_chars=28, max_lines=3, slack=1.5, hard_cap=40):
+def split_subtitle_lines(text, max_chars=28, max_lines=3, hard_cap=40):
     """把一句长字幕切成均衡字幕行（仅显示用）。
 
     固定宽度贪婪切行：每行尽量填满到 max_chars，断点优先标点/空格，其次 CJK 字符
@@ -251,7 +251,6 @@ def split_subtitle_lines(text, max_chars=28, max_lines=3, slack=1.5, hard_cap=40
         text: 单句文本（split_sentences 的一个元素）
         max_chars: 单行目标宽度（字符）；行尽量填满到此值
         max_lines: 行数上限（仅 max_lines<=1 时禁用切分；其余仅作极少触发兜底）
-        slack: 保留参数以兼容旧调用；新算法按固定宽度切分，slack 不再生效
         hard_cap: 物理行硬上限（字符），最终安全约束
 
     Returns:
@@ -278,7 +277,7 @@ def subtitle_params_for(aspect="landscape"):
     选项），因此本函数只按 aspect 区分。
 
     Returns:
-        dict(max_chars=, slack=, hard_cap=, cue_max_lines=)
+        dict(max_chars=, hard_cap=, cue_max_lines=)
     """
     # portrait 归一化：竖屏 3:4 复用 vertical 家族标识（与 gen_hyperframes
     # 的归一化语义一致），CLI/调用方传 "portrait" 也拿到竖屏切行参数。
@@ -287,7 +286,6 @@ def subtitle_params_for(aspect="landscape"):
     # 竖屏画面窄（1080 宽），每行只能放 ~22 字；横屏字幕条 maxWidth 900、
     # 字号 ≈22 字时 870px/46px ≈28 字。
     max_chars = 22 if aspect == "vertical" else 28
-    slack = 1.0 if aspect == "vertical" else 1.5
     # 物理行硬上限：次要标点切不动时按此字符级硬切，保证 1 逻辑行 = 1
     # 物理行，不二次换行（横屏 ~34 字/行、竖屏 ~22 字/行）。
     hard_cap = 22 if aspect == "vertical" else 34
@@ -295,22 +293,22 @@ def subtitle_params_for(aspect="landscape"):
     # 唯一模式）按整句渲染——内容是字幕本身，切行只影响 cue 数据不影响
     # 视觉。
     cue_max_lines = 99 if aspect == "vertical" else 2
-    return {"max_chars": max_chars, "slack": slack,
+    return {"max_chars": max_chars,
             "hard_cap": hard_cap, "cue_max_lines": cue_max_lines}
 
 
-def split_subtitle_cues(text, max_chars=28, cue_max_lines=2, slack=1.5, hard_cap=40):
+def split_subtitle_cues(text, max_chars=28, cue_max_lines=2, hard_cap=40):
     """把一句长字幕切成若干"cue 组"：每屏最多 cue_max_lines 行。
 
     观感约束：同屏字幕最多两行，再多显拥挤——超出
     部分顺延到下一条时间线（cue），时长由调用方按字符占比切分。内部先用
-    较大的行数上限做标点均衡切行（保证超长句也能切到每行 <= max_chars*1.5），
-    再按 cue_max_lines 顺序分组。
+    较大的行数上限做标点均衡切行（保证超长句也能切到每行 <= max_chars，
+    hard_cap 兜底），再按 cue_max_lines 顺序分组。
 
     Returns:
         list[list[str]]: 每个元素是一屏的行列表（1..cue_max_lines 行）
     """
     lines = split_subtitle_lines(text, max_chars=max_chars, max_lines=8,
-                                 slack=slack, hard_cap=hard_cap)
+                                 hard_cap=hard_cap)
     return [lines[i:i + cue_max_lines]
             for i in range(0, len(lines), cue_max_lines)]

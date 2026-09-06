@@ -1,7 +1,67 @@
 {
   "_archive": "更早的 47 条（1.1.0 – 1.5.26）已压缩为一行式摘要，见 dev/changelog-archive.md；本文件只保留最近 20 条完整记录。",
-  "current_version": "1.5.52",
+  "current_version": "1.5.64",
   "entries": [
+    {
+      "version": "1.5.64",
+      "date": "2026-09-06",
+      "summary": "竖屏图框上边距再调（用户指定 45px）：vertical.image.marginTop 38→45。像素实测：图框顶 260→267（+7px）、高 728（√2:1 精确）、verse 距底不变；check --snapshots 0 error（首跑遇偶发 Check failed 无快照，重跑即过，未复现）、dev/check 17/17；成片未重渲。"
+    },
+    {
+      "version": "1.5.63",
+      "date": "2026-09-06",
+      "summary": "竖屏图框上边距定值（用户指定 38px）：vertical.image.marginTop 32→38。像素实测：图框顶 254→260（+6px）、高 728（√2:1 精确）、verse 距底不变；check --snapshots 0 error、dev/check 17/17；成片未重渲。测量方法修正：按行暗像素数找框顶会被大号标题字形误触发，改为要求行内暗像素横向跨度覆盖框宽（首像素 <60 且末像素 >1000 且数量 >400）再定位框界。"
+    },
+    {
+      "version": "1.5.62",
+      "date": "2026-09-06",
+      "summary": "竖屏图框上边距改大（用户要求「图片框上边距改大一点」）：模板 vertical.image.marginTop 12→32（回到接近 1.5.58 前的 48 设计值，取中间值）。像素实测：图框顶 234→254（+20px）、高 728（√2:1 无回归）、侧隙 29/30px 不变、垂直预算余量仍充裕（ verse 350 + padding-bottom 50 钉底布局不受影响）。check --snapshots 0 error、selftest 断言模板推导自动适配、dev/check 17/17；成片未重渲（横竖屏 MP4 均为 1.5.55 时代旧版，待用户确认后一起重渲）。"
+    },
+    {
+      "version": "1.5.61",
+      "date": "2026-09-06",
+      "summary": "竖屏图框比例 4:3 → √2:1（用户确认，模板 vertical.image.aspect=「1.4142/1」）：宽 1030 不变、高 772.5→728.3（缩 44.2px）。代价是 4:3 图源从满框零间隙变为左右各 ~29/30px 透明侧隙（与横屏 √2:1 框行为一致，两画幅比例统一）；垂直余量增至 ~78px。像素实测：框高 728、侧隙 29/30px、verse 无变化；check --snapshots 0 error、selftest 断言模板推导自动适配、dev/check 17/17；成片未重渲。"
+    },
+    {
+      "version": "1.5.60",
+      "date": "2026-09-06",
+      "summary": "竖屏卡片 padding-bottom 0→50（用户指定，1.5.59 贴底的回调）：视窗底边距画布 50px，文字静止区更离底边远一点。预算余量 33.9px 充裕。像素实测：verse 文字范围 y 1118..1355（视窗底 1390）、图框 772 满框零侧隙无回归；check --snapshots 0 error、dev/check 17/17；成片未重渲。"
+    },
+    {
+      "version": "1.5.59",
+      "date": "2026-09-06",
+      "summary": "竖屏 verse 视窗贴底（用户要求「向底部对齐」）：卡片 padding-bottom 80→0（模板 segCard.padding=「62px 50px 0px」），视窗底边齐画布。此前视窗已是底部锚定（flex margin-top:auto），80px 就是卡片下内边距——归零即贴底。文字静止时距底约 60px（视窗内部 clipPad 渐隐呼吸区），滚动时在底边渐隐。垂直预算更宽裕（内容高 1260→1378，余量 83.9px 由图与视窗之间的 auto-margin 吸收，图框仍满 1030×772.5 零间隙）。像素实测：verse 文字块整体下移恰 80px（顶 1087→1167），图框无回归。⚠ 取舍：原 80px 底部留白有给抖音/快手沉浸式 feed 底部 UI 让位的用途，贴底后当前句更接近平台 UI 覆盖区——已知取舍，用户明确要求。验证：check --snapshots 0 error、dev/check 17/17、rendering.md 留白描述同步；成片未重渲。"
+    },
+    {
+      "version": "1.5.58",
+      "date": "2026-09-06",
+      "summary": "竖屏 verse 视窗 300→350（用户指定）。350 多占的 50px 会重新击穿垂直预算（1.5.57 修过的 flex 压扁会复发：1294+50-48…即标题区 159.6 + 上间距 24 + 满框 772.5 + 350 = 1306.1 > 内容高 1260），故同步腾挪标题区：模板 segCard.padding 上值 100→62、image.marginTop 24→12，图框保持满 1030×772.5 零间隙（预算 1294.1 ≤ 1298，余量 3.9px 由 verse auto-margin 吸收）；gen 竖屏 badge top 104→66（top = padding 上值 + 3.6，耦合关系已写进 CSS 注释）。像素复测：框高 772 满满 4:3、侧隙 0/1px、图底 1005 vs verse 顶 1010（5px 不重叠）；check --snapshots 0 error。验证：selftest 断言全模板推导自动适配、dev/check 17/17；成片未重渲。注意：badge top 与 segCard.padding 上值是手工耦合，改模板 padding 必须同步改 gen 里的 badge top——已有注释锚点，长期应模板化。"
+    },
+    {
+      "version": "1.5.57",
+      "date": "2026-09-06",
+      "summary": "修竖屏图框被 flex 压扁导致的意外侧隙（用户预览发现，像素实测实锤）。1.5.56 把竖屏图槽加宽到 1030×772.5 后，竖屏内容预算（1260 = 1440 − 上 100 − 下 80）装不下「标题区 ~160 + 图 margin-top 48 + 图 772.5 + 句流 300 = 1280.5」，flex-shrink 把图框压缩 ~20px 到实际 752 高（比例 1.37 不再是 4:3），4:3 图 contain 后左右各露 ~13px 侧隙——快照 PIL 实测 dark x 38..1041 vs 框 25..1055。修复：模板 layout.vertical.image.marginTop 48→24（满框后预算 1256.5 ≤ 1260，余量 3.5px 归句流 auto-margin 吸收）。修复后实测：内容高 772（满 4:3）、左右间隙 0/1px（1px 为圆角抗锯齿）。教训：改图框尺寸必须连垂直预算一起验（标题区 + margin + 框高 + 句流 ≤ 卡片内容高），缩量小于 ~20px 的 flex 压扁在关键帧目检里不显眼、只有像素测量能抓到。验证：check --snapshots 0 error + 像素复测零间隙；selftest 断言为模板推导无需改、dev/check 17/17；成片未重渲（沿用 1.5.56 预览口径）。"
+    },
+    {
+      "version": "1.5.56",
+      "date": "2026-09-06",
+      "summary": "实例预览反馈的 3 处版式调整。①竖屏 badge 与标题同行：1.5.55 的流内堆叠（badge 悬在标题上方）用户不满意——恢复绝对定位但对齐标题首行（top = 卡片上内边距 100 + (72×1.35−90)/2 ≈ 104，left 对齐卡片左内边距 50），紧随 badge 的标题盒用真实盒宽避开（.badge + .seg-title-wrap{margin-left:110px;width:calc(100% - 110px)}）；注意 hyperframes content_overlap 按元素盒测量，仅靠 padding/text-indent 缩进不会缩小盒、仍会误报，必须用 margin 收窄盒本身。②竖屏图框左右边距 25px：新增模板键 layout.vertical.image.marginSide（默认 0 = 原行为），槽宽 calc(100%+2·marginSide) + 负左外边距外扩（本实例 25 → 槽 1030×772.5，仍 4:3）；横屏图框本就是 25px 屏边距、不动。③图片框 letterbox 填充由模糊改透明：删除 .seg-image::before 的 blur(28px) 背景填充层（横竖屏同一规则一并生效），contain 留出的空隙透出 body_bg 底色。selftest 同步：竖屏图槽断言改为模板推导 marginSide（新增 width calc 与负外边距两个子断言）。验证：两画幅 check --snapshots 0 error（竖屏 layout 9 samples 全过、对比度 45/45 + 1 个既有开场字幕条警告）、selftest 398/398、dev/check 17/17；成片未重渲（按用户要求只出预览）。"
+    },
+    {
+      "version": "1.5.55",
+      "date": "2026-09-06",
+      "summary": "实例制作（竖屏）时发现的竖屏版式 bug：内容段 badge（章节编号圆）在竖屏会压住标题首字。根因：竖屏 .seg-title-wrap 被覆盖为流式（position:relative;width:100%，忽略 leftWithBadge），但 .badge 仍绝对定位（left:80;top:60），两者碰撞——hyperframes check 在全部 6 个内容段报 content_overlap #badge-segN in #title-segN（7 errors，视频会有一处字被遮挡的半成品）。修法（gen_hyperframes.py 竖屏 CSS 块新增一条）：竖屏 .badge 改为流内元素（position:relative;align-self:flex-start;margin-bottom:16px），塞进 flex 列顶部、与标题垂直堆叠，彻底消除重叠且不改变竖屏信息密度。验证：check --snapshots 竖屏 0 error（layout 9 samples 全过、对比度 45/45，剩 1 个开场字幕条 contrast 警告为既有项）、成片 verify_render 7/7（H.264+AAC、1080×1440、24fps、时长偏差 0.02s）；selftest 398/398、dev/check 17/17。"
+    },
+    {
+      "version": "1.5.54",
+      "date": "2026-09-06",
+      "summary": "Ponytail 审查余下的 5 处次级问题（第 5 步相关）。①gen_hyperframes.py 标题估算注释：旧写「上缘 292、两行标题不再压图」与 references/rendering.md 的「上缘 218、两行标题轻微交叠」正面矛盾——改为正确几何（上缘 = 1080/2 − 644/2 = 218，位于两行标题底 260 之上约 42px，与标题轻微交叠，乃已知取舍）。②dev/check.py image_size 门禁：原把 SKILL.md + rendering.md 拼成一个字符串判包含，一份正确即可放行另一份漂移；改为逐文件判，缺哪份报哪份。③doc_drift:pitfalls_count（SKILL.md）门禁：原 pattern「N 条具体踩坑记录」永远匹配不到 SKILL.md 实际写的「18 条踩坑记录」，等于长期 skip；改为「N 条踩坑记录」，与 pitfalls.md 标题 pattern 对齐，现可真校验（18 == 实际 18 小节）。④run.py 并行阶段 SIGINT handler 装完不恢复：后续 check/render 阶段 Ctrl-C 被吞（sys.exit(130) 且子进程树已无），长任务想停停不下来；改为捕获并保存原 handler、并行阶段结束即恢复默认。⑤新增 doc_drift:cli_aspect_choices 门禁：交叉校验 SKILL.md 声明的 --aspect 取值 ⊆ run.py argparse choices，从根上堵住「文档声明了代码已删的 CLI 选项」（--aspect vertical 存活一整版即此洞）。验证：dev/check 17/17（原 16 + 新增 1）、selftest 399/399。"
+    },
+    {
+      "version": "1.5.53",
+      "date": "2026-09-06",
+      "summary": "Ponytail 视角审查发现的三处修复（门禁全绿但问题真实存在）。①wrap_numbers 撕开 HTML 实体：esc() 把 ' 转成 &#39;，原正则 `(?<![&#])` 只挡住紧跟 &/# 的首位数字，`9`（前一位是 `3`）被包进 span，实体断成 `&#3<span…>9</span>;`，浏览器把 `&#3` 当无分号数字实体解析成控制字符，画面正文出现乱码（中英混合稿的 Apple's / O'Brien 即可触发）。改为正则先整条吃掉 `&#\\d+;` 分支、命中即原样返回，剥掉 span 后与 esc() 输入严格相等。②run.py 超时收尾在 POSIX 上杀死自己：_run() 的 subprocess.run 未开独立会话，_try_kill 的 killpg(getpgid(child)) 打到 run.py 自己的进程组，用户看到 exit 143 而不是“步骤超时”提示；改为仅带 timeout 的步骤（check）开 start_new_session，不带 timeout 的保持同组以保留 Ctrl-C 传递。③SKILL.md 第 5 步文档了不存在的 `--aspect vertical`(9:16 1080×1920)——1.5.52 画幅收敛时已从 CLI 删除，choices 只有 landscape/portrait/both，agent 照抄必报 invalid choice；该节删除，竖屏节改为 portrait 为唯一竖屏画幅，并修正同段遗留的旧几何“860×700”→“910×644”与已删除的“两行标题告警”表述，references/rendering.md 的交叉引用同步。④selftest [23c] 守护断言收紧：原断言只查 `>39</span>` 与 `&#<span`，漏掉真实污染形态 `>9</span>`，故 bug 存在时仍全绿；改为「剥掉 span 标记后必须 == esc() 原文」的不变量断言（不写死污染形态）+ 实体形态断言。验证：selftest 398/398、dev/check 16/16。"
+    },
     {
       "version": "1.5.52",
       "date": "2026-09-06",

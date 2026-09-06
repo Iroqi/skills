@@ -17,8 +17,19 @@ import sys
 _USER_ENV_PATH = os.path.join(os.path.expanduser("~"), ".config", "ai-video", ".env")
 DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 
+_ENV_CACHE = {}  # path -> 解析结果（.env 在单次 CLI 进程内稳定，缓存避免每次调用重复 3 编码探测）
+
 
 def _parse_env_file(path):
+    """解析一个 KEY=VALUE 格式的 .env 文件，返回 dict（带进程内缓存）。"""
+    if path in _ENV_CACHE:
+        return _ENV_CACHE[path]
+    result = _parse_env_file_raw(path)
+    _ENV_CACHE[path] = result
+    return result
+
+
+def _parse_env_file_raw(path):
     """解析一个 KEY=VALUE 格式的 .env 文件，返回 dict。
 
     编码探测链：utf-8-sig → utf-16 → gb18030，全部失败才放弃并明确指向

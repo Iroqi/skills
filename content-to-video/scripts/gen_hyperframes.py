@@ -80,22 +80,25 @@ def _file_identical(path_a, path_b):
         return False
 
 
-_NUM_SPAN_RE = re.compile(r"(?<![&#])\d[\d,，]*(?:\.\d+)?")
+# 第一分支 `&#\d+;` 整体吃掉数字字符引用（esc() 把 `'` 转成 `&#39;`），
+# 它必须排在数字分支之前：只靠 `(?<![&#])` 挡不住实体里的第二位数字
+# （`&#39;` 的 `9` 前面是 `3`），会把实体撕成 `&#3<span…>9</span>;`，
+# 浏览器把 `&#3` 当无分号数字实体解析成控制字符，画面上出现乱码。
+_NUM_SPAN_RE = re.compile(r"&#\d+;|(?<![&#])\d[\d,，]*(?:\.\d+)?")
 
 
 def wrap_numbers(escaped_html, accent):
     """把正文行里已 esc() 的数字串包上 accent 着色 span（仅显示层强调，
     与 scripts/check_facts.py 的抽取正则同源）。
 
-    本函数的输入是 esc() 之后的文本，而 esc() 会把 `'` 转成 `&#39;`——
-    数字字符引用里本身含数字，裸跑正则会把实体撕开（"Apple's 5G" 转义后
-    的 `&#39;s 5G` 中 `39` 和 `5` 都被误包，渲染出游离的 `&#`/`;` 乱码）。
-    `(?<![&#])` 挡住紧跟在 &/# 后面的数字：esc() 的全部产物里只有
-    数字字符引用会出现这个序列，正常文本中数字前的 &/#（如 "C#5"、
-    "&5折"）极为罕见且漏包一个数字无实害。
+    输入是 esc() 之后的文本，所以数字字符引用（`&#39;`）会混在正常数字里，
+    必须整条跳过而不参与着色——命中第一分支时原样返回，剥掉 span 后与输入
+    严格相等。`(?<![&#])` 是数字分支的补充守卫，挡住紧跟在 &/# 后面的数字
+    （"C#5" 这类极为罕见，漏包一个数字无实害）。
     """
     return _NUM_SPAN_RE.sub(
-        lambda m: f'<span class="num-accent" style="color:{accent}">{m.group()}</span>',
+        lambda m: m.group() if m.group().startswith("&#")
+        else f'<span class="num-accent" style="color:{accent}">{m.group()}</span>',
         escaped_html)
 
 
@@ -187,6 +190,9 @@ def generate_html(manifest, audio_src, images=None,
         gsap_src: GSAP script URL or local path. Defaults to the jsdelivr CDN;
             pass a relative path (e.g. "vendor/gsap.min.js") for offline /
             air-gapped rendering environments where CDN access is unavailable.
+            默认 CDN 仅是兜底——本文件 main() 实际调用前会用 ensure_local_gsap()
+            把脚本拷到 output_dir/vendor/，并把本地路径注入进来；离线/无网
+            环境下 ensure_local_gsap() 返回 None，main() 才会回退到这个 CDN 默认。
         aspect: 画幅比例（只有两种）："landscape" 横屏 16:9（1920x1080）/
             "portrait" 竖屏 3:4（1080x1440，紧凑留白 + 图片槽 4:3）。
             portrait 复用竖屏布局家族（内部 data-aspect 写 "vertical"，
@@ -340,6 +346,9 @@ def generate_html(manifest, audio_src, images=None,
     _v_verse_line = _vv.get("linePad", 5)
     # 竖屏图片槽圆角（横屏走 typography.imageBorderRadius=24，竖屏槽更小）
     _v_img_radius = tpl_layout["image"].get("borderRadius", 16)
+    # 竖屏图片槽左右外扩边距（px）：槽比正文轴线（50px）更贴边，左右各外扩
+    # marginSide（0 = 与内容盒同宽，即收编前的行为）
+    _v_img_ms = tpl_layout["image"].get("marginSide", 0)
 
     # ── sub_mode 分支产物：字幕/内容呈现两模式各自的 CSS 与 JS ──
     # verse（默认）= 歌词式句子流；bar = 经典底部字幕条 + 正文卡。
@@ -690,9 +699,11 @@ def generate_html(manifest, audio_src, images=None,
                               else _tl["fontSizeOther"])
         title_size = f"{_title_font_px}px"
         # 标题行数估算（供正文卡动态 top 推导用）：字宽按 CJK/全角 1em、
-        # 其余 0.62em 估。图框改 √2:1 后上缘 292 已在两行标题（底 260）
-        # 之下，两行标题不再有压图风险，早年的"第二行伸入图片区"告警
-        # 已随其前提一并移除。
+        # 其余 0.62em 估。图框改 √2:1（910×644）后整屏垂直居中，上缘
+        # = 1080/2 − 644/2 = 218，位于两行标题底（260）之上约 42px——
+        # 与标题有轻微交叠（references/rendering.md 已记为已知取舍），
+        # 早年"第二行伸入图片区"告警即因此前提移除：交叠是刻意接受的
+        # 结果，而非已消除的风险。
         if aspect == "landscape" and has_image:
             _tw_px = max(width - left_px - 110, 200)
             _est_w = int(sum(
@@ -1215,12 +1226,10 @@ def generate_html(manifest, audio_src, images=None,
     # 导出的 SRT 共用同一份，保证片内字幕与外挂字幕逐条对齐）。
     _sub_p = subtitle_params_for(aspect)
     _sub_cap = _sub_p["max_chars"]
-    _sub_slack = _sub_p["slack"]
     _sub_hard = _sub_p["hard_cap"]
     _sub_cue_lines = _sub_p["cue_max_lines"]
     for sent in sentences:
         groups = split_subtitle_cues(sent["text"], max_chars=_sub_cap,
-                                     slack=_sub_slack,
                                      hard_cap=_sub_hard,
                                      cue_max_lines=_sub_cue_lines)
         total_chars = sum(len("".join(g)) for g in groups)
@@ -1300,7 +1309,6 @@ body{{font-family:{css_font_family}}}
 .seg-progress{{position:absolute;bottom:0;left:0;height:{css_prog_height}px}}
 #twipe{{position:absolute;top:0;left:-100%;width:100%;height:100%;z-index:50;pointer-events:none;will-change:transform}}
 .seg-image{{position:absolute;top:{css_img_top};{css_img_pos};width:{css_img_width}px;height:{css_img_height}px;border-radius:{css_img_radius}px;overflow:hidden;background:{theme_colors["body_bg"]}}}
-.seg-image::before{{content:"";position:absolute;inset:-14%;z-index:0;background-image:var(--img);background-size:cover;background-position:center;filter:blur(28px) brightness(0.9);transform:scale(1.15)}}
 .seg-image img{{position:relative;z-index:1;width:100%;height:100%;object-fit:contain;display:block}}
 
 {_sub_css}
@@ -1325,9 +1333,19 @@ body{{font-family:{css_font_family}}}
 [data-aspect="vertical"] .seg-card{{display:flex!important;flex-direction:column!important;padding:{_v_pad}!important}}
 [data-aspect="vertical"] .seg-accent-bar{{display:none!important}}
 [data-aspect="vertical"] .seg-title-wrap{{position:relative!important;left:auto!important;right:auto!important;top:auto!important;transform:none!important;width:100%!important;padding:0!important;text-align:left!important;flex-shrink:0!important}}
+/* 竖屏 badge 与标题同行（用户要求，1.5.56）：标题是 width:100% 流式（忽略
+   leftWithBadge），badge 恢复绝对定位但对齐标题首行——top = 卡片上内边距 62
+   + (标题行盒 72×1.35≈97 − badge 90)/2 ≈ 66，left 对齐卡片左内边距 50。
+   紧随 badge 的标题盒用真实盒宽右移避开圆（margin-left 110 → 文字起点 160 =
+   badge 右缘 140 + 间距 20）；hyperframes content_overlap 按元素盒测量，
+   仅靠 padding/text-indent 缩进盒不变小、仍会误报。
+   ⚠ top 与 segCard.padding 上值耦合（top = padding + 3.6），改模板 padding
+   上值时必须同步改这里（1.5.57 前后 100→62 / 104→66 各一次）。 */
+[data-aspect="vertical"] .badge{{position:absolute!important;top:66px!important;left:50px!important;margin:0!important}}
+[data-aspect="vertical"] .badge + .seg-title-wrap{{margin-left:110px!important;width:calc(100% - 110px)!important}}
 [data-aspect="vertical"] .seg-title{{line-height:1.35!important}}
 [data-aspect="vertical"] .tagline{{margin-top:12px!important;padding-left:16px}}
-[data-aspect="vertical"] .seg-image{{position:relative!important;top:auto!important;left:auto!important;right:auto!important;transform:none!important;width:100%!important;max-width:100%!important;height:auto!important;aspect-ratio:{_v_img_ar}!important;flex:0 1 auto!important;margin:{_v_img_mt}px 0 0!important;border-radius:{_v_img_radius}px!important}}
+[data-aspect="vertical"] .seg-image{{position:relative!important;top:auto!important;left:auto!important;right:auto!important;transform:none!important;width:calc(100% + {_v_img_ms * 2}px)!important;height:auto!important;aspect-ratio:{_v_img_ar}!important;flex:0 1 auto!important;margin:{_v_img_mt}px 0 0 -{_v_img_ms}px!important;border-radius:{_v_img_radius}px!important}}
 [data-aspect="vertical"] .seg-image img,[data-aspect="vertical"] .seg-image video{{width:100%!important;height:100%!important;object-fit:contain!important}}
 [data-aspect="vertical"] .body-text{{margin:24px 0 0!important;padding:20px 24px!important;max-width:100%!important;margin-left:0!important}}
 [data-aspect="vertical"] .agenda-list{{margin-left:0!important;padding-left:16px}}

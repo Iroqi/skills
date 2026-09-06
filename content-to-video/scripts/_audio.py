@@ -4,7 +4,6 @@
 包含：时长测量、静音生成、atempo 变速、拼接、BGM 混音。
 所有函数都只依赖"ffmpeg 路径 + 参数"，不碰 TTS/网络，可脱离 pipeline 单独测试。
 """
-import math
 import os
 import subprocess
 import sys
@@ -12,6 +11,7 @@ import wave
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _ffmpeg import parse_duration  # noqa: E402
+from _contracts import validate_speed  # noqa: E402  领域规则单一来源
 
 
 def _wav_duration(audio_path):
@@ -112,19 +112,6 @@ def generate_silence(ffmpeg_path, duration, out_path):
         raise RuntimeError(
             f"生成静音文件失败（ffmpeg lavfi 与 Python wave 兜底都不可用）: "
             f"{out_path}: {e}") from e
-
-
-def validate_speed(speed):
-    """校验语速倍率必须是 >0 的有限数值，非法时抛 ValueError。
-
-    集中在这里供 _contracts.py（segments_source 里的 speed 字段）和
-    build_atempo_filter（最底层）共用，避免两处各写一份判断而漂移。
-    """
-    if not isinstance(speed, (int, float)) or isinstance(speed, bool):
-        raise ValueError(f"speed 必须是数值（收到 {speed!r}）")
-    if not math.isfinite(speed) or speed <= 0:
-        raise ValueError(f"speed 必须是大于 0 的有限数值（收到 {speed!r}）")
-    return speed
 
 
 def build_atempo_filter(speed):

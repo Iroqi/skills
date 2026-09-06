@@ -57,7 +57,7 @@ sys.path.insert(0, SCRIPTS_DIR)
 from render_watch import resolve_command, _try_kill  # noqa: E402  复用 npx/.cmd 的 Windows 解析与进程树收尾
 from _theme import list_theme_names  # noqa: E402  --theme choices 与 registry.json 单一数据源同步
 from _voices import list_voice_ids  # noqa: E402  --voice-id choices 与音色注册表单一数据源同步
-from _audio import validate_speed  # noqa: E402  坏语速 fail-fast
+from _contracts import validate_speed  # noqa: E402  坏语速 fail-fast（规则单一来源）
 from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
 # ── 制作报告：一次 run.py 跑完后，各步骤耗时/配图情况/跳过了什么散落在各
@@ -235,8 +235,15 @@ def _run(cmd, cwd=None, step_name=None, timeout=None):
     resolved = resolve_command(cmd)
     print(f"\n>>> {' '.join(resolved)}", flush=True)
     t0 = time.time()
+    # start_new_session 只在带 timeout 的步骤（check）开启：_try_kill 是
+    # 按进程组收树的（POSIX 走 killpg），子进程若与 run.py 同组，killpg
+    # 会把 SIGTERM 发给 run.py 自己——用户看到 exit 143，而不是下面那段
+    # "步骤超时"提示。不带 timeout 的步骤保持同组，Ctrl-C 才能正常传给
+    # 子进程（否则会留下孤儿 Chrome 继续跑）。
+    _new_session = timeout is not None
     try:
-        subprocess.run(resolved, cwd=cwd, check=True, timeout=timeout)
+        subprocess.run(resolved, cwd=cwd, check=True, timeout=timeout,
+                       start_new_session=_new_session)
     except subprocess.TimeoutExpired as e:
         # 收树：Chrome 常驻会拖慢后续渲染并堆积临时 profile 目录。
         # 只收本命令自己的进程树——绝不按进程名无差别 kill，那样会误杀
@@ -562,10 +569,11 @@ def main():
             # 130 是 "被 SIGINT 终止" 的惯例退出码；Windows 上 sys.exit
             # 传负数会被 shell 显示成 241，130 才是可读的。
             sys.exit(130)
+        _prev_sigint = signal.getsignal(signal.SIGINT)
         try:
             signal.signal(signal.SIGINT, _on_sigint)
         except (ValueError, OSError):
-            pass  # 非主线程等场景装不上，那就退回默认行为（不致命）
+            _prev_sigint = None  # 非主线程等场景装不上，那就退回默认行为（不致命）
         # 轮询两个子进程而不是先后阻塞 wait()：一来各步耗时在"自身退出"
         # 的时点测量（先后 wait 会把先完成那步的耗时记成"等到另一个也结
         # 束"，两步相加还大于真实墙钟）；二来任一子进程非零退出就立刻收

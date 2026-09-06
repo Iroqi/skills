@@ -6,12 +6,12 @@
 或静默降级收场。这里把"必需字段"写成校验函数，缺什么报什么。
 """
 import json
+import math
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _audio import validate_speed  # noqa: E402
 from _voices import is_valid_voice_id, list_voice_ids  # noqa: E402
 
 # 段落 id 的合法形态：字母开头，只含字母/数字/下划线/连字符。id 会被
@@ -37,6 +37,20 @@ CONTENT_SID_PREFIXES = ("news", "seg")
 def is_content_sid(sid):
     """该 sid 是否属于"需要配图的内容段落"（排除 opening/closing）。"""
     return (sid or "").startswith(CONTENT_SID_PREFIXES)
+
+
+def validate_speed(speed):
+    """校验语速倍率必须是 >0 的有限数值，非法时抛 ValueError。
+
+    跨脚本领域规则收口在这里（与 DEFAULT_SPEED 同一模块）：pipeline 的
+    --speed 入口、本模块的 segments_source 值校验、_audio.build_atempo_filter
+    的入口守卫共用这一份判断，避免多处各写一份而漂移。
+    """
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool):
+        raise ValueError(f"speed 必须是数值（收到 {speed!r}）")
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError(f"speed 必须是大于 0 的有限数值（收到 {speed!r}）")
+    return speed
 
 
 # ── 跨脚本默认值（单一来源）────────────────────────────────────────
