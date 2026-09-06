@@ -954,7 +954,7 @@ def main():
                   f"不会触发剔除。", file=sys.stderr, flush=True)
 
     # ── Write manifest ─────────────────────────────────────────────
-    # 原子写：timing_manifest.json 是下游（gen_hyperframes / export_extras /
+    # 原子写：timing_manifest.json 是下游（gen_hyperframes /
     # verify_render）唯一的时间轴数据源，写到一半被 Ctrl-C 打断会留下一份
     # 截断的 JSON——下次 --resume 直接崩在 json.load，且堆栈完全不指向
     # "上次中断了，重跑一遍就好"。先写 .tmp 再 replace，要么完整要么不存在。

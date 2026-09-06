@@ -1,7 +1,7 @@
 ---
 name: content-to-video
 description: 把任意信息源（粘贴的文本/笔记、上传的文档、网页链接、结构化资讯 API）自动转成带字幕、配图和动效的解说视频——当前对话模型提炼要点写稿，逐句 TTS 配音，Hyperframes 渲染成片。适用于"把这份 PDF/文章/会议纪要/读书笔记做成讲解视频"、"做一期资讯播报"、"日报视频"、"把讲义做成系列短视频"等需求。触发词包括"把……做成视频"、"视频讲解/播报"、"资讯视频"、"帮我出个视频版"等；只要意图是输入一批文字/资料、输出一条配音字幕视频，就应使用本技能。
-version: "1.5.51"
+version: "1.5.52"
 ---
 
 # 信源转视频（Content-to-Video）
@@ -43,9 +43,7 @@ content-to-video/
 │   ├── verify_render.py                 第 5 步 渲染后 时长/编码 校验
 │   ├── render_watch.py                  渲染命令解析辅助（run.py 内部用）
 │   ├── budget.py                        可选：时长预算（plan/estimate）
-│   ├── export_extras.py                 可选：导出章节时间戳 + SRT 字幕
 │   ├── split_series.py                  可选：长文档 → 多集 segments 骨架
-│   ├── gen_cover.py                     可选：竖版封面 + 候选标题草稿
 │   ├── check_series.py                  可选：系列跨集参数一致性检查
 │   ├── preview.js                       可选：浏览器预览（仅人工看，渲染/校验不受影响）
 │   ├── selftest.py                      确定性冒烟测试（改脚本后跑，不联网不调 API）
@@ -398,20 +396,6 @@ python scripts/gen_hyperframes.py \
 > 关键 CSS 约定速记：子元素（tagline、body-text）不要设 `opacity:0`（父级 clip 的 `opacity:0` 已控制可见性）——规则细节见 `references/pitfalls.md` #3。
 
 **渲染命令（快照检查 → 人工审帧 → 正式渲染）**：`npx hyperframes check --snapshots` 抓取标注关键帧后，**必须用 Read 工具逐张打开关键帧 PNG 人工审帧**（每个内容段落至少 1 帧、开场/结尾各 1 帧——查配图是否贴合对应段落、标题/正文是否溢出画布、是否与配图重叠被裁切；视觉审帧是版式问题的唯一防线，不是"跑完命令就算过"），确认无问题再进 `render_watch.py` 包装渲染 → `verify_render.py` 校验。完整命令序列，以及帧率（默认 24fps）、抓帧 worker（默认 6，实测数据见 references/rendering.md）、`--gpu` 实测结论、`--quality` 档位等逐条说明，见 `references/rendering.md`。`run.py` 另有两个迭代提效开关：HTML 未变时自动跳过 check（`--force-check` 强制重跑）、`--reuse-render` 在 HTML/音频/渲染参数都没变时复用已校验成片直接跳过渲染。
-
-#### 可选：导出章节时间戳 + SRT 字幕
-
-`timing_manifest.json` 里已经有精确到秒的每句起止时间，成片渲染完之后顺手导出两个常用附加产出物（不影响视频本身，纯粹是数据已经在手边）：
-
-```bash
-python scripts/export_extras.py -m audio_output/timing_manifest.json -o hf-project
-```
-
-产出 `hf-project/chapters.txt`（B 站/YouTube 简介常用的章节时间戳格式，`00:00 开场` / `00:32 反向传播算法` ……，直接来自 `segments[]` 的分段信息，manifest 没有 `segments` 字段时会跳过并提示）和 `hf-project/captions.srt`（标准 SRT 字幕，每句一条 cue，双人对话段落的句子会带 `[说话人]` 前缀）。用 `--only chapters` 或 `--only srt` 只导出其中一个。
-
-> **竖屏项目必须显式传 `--aspect`**（`--aspect portrait`）。SRT 的切行参数与片内字幕共用同一份来源，但不传 `--aspect` 时会按横屏的 28 字/行切，而竖屏画面每行只放得下 22 字——导出的字幕跟片里看到的不是同一套切法。横屏是默认值，不用传。
-
-同类的附加产出还有封面：`python scripts/gen_cover.py -s segments_source.json -o hf-project --theme dark` 从稿件直接生成竖版封面 `cover.png`（1080×1920，主题色渐变 + 首段要点文字）和 3 个候选标题草稿 `titles.json`——它只负责省去"从空白图做起"的起手式，候选标题是**草稿**，由 agent/人工终审润色后才可用。
 
 ## 一键编排（可选）
 

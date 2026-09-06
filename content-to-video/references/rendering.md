@@ -68,7 +68,7 @@
 - 每个内容段落一个 `<div class="clip" data-start data-duration data-track-index>`
 - GSAP timeline 注册在 `window.__timelines["main"]`
 - `<audio id="main-audio" data-start data-duration data-track-index src="...">`
-- 字幕通过 `tl.eventCallback("onUpdate")` 同步；**长句自动切行 + 每屏最多两行**：单句超过约 28 字时在次要标点（逗号/顿号等）处均衡切行，再按每屏两行分组——超出的行顺延到下一条 cue（时长按字符占比切分、相邻 cue 首尾相接，整组与该句音频窗口严格同步；行内逐行错峰淡入）。export_extras 导出的 captions.srt 与此同规则拆条。写稿时仍应优先控制句长（见 SKILL.md 第 2 步规则 3）
+- 字幕通过 `tl.eventCallback("onUpdate")` 同步；**长句自动切行 + 每屏最多两行**：单句超过约 28 字时在次要标点（逗号/顿号等）处均衡切行，再按每屏两行分组——超出的行顺延到下一条 cue（时长按字符占比切分、相邻 cue 首尾相接，整组与该句音频窗口严格同步；行内逐行错峰淡入）。写稿时仍应优先控制句长（见 SKILL.md 第 2 步规则 3）
 - 每条内容的 badge、标题、tagline、body 摘要、进度条、accent 竖条、背景 glow（`flow` 自然叙事模式下无 badge，段落切换为柔和 cross-fade）；横屏左对齐段落的 tagline 相对标题缩进一点制造层级差（模板 `tagline.indent`，默认 24px；居中版式不缩进）
 
 ## 关键 CSS 规则

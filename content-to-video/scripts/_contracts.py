@@ -268,7 +268,7 @@ def validate_timing_manifest(data):
                     f"pipeline.py 产出格式）")
             # 段内句子与顶层 sentences 走同一份必需字段校验（只查
             # "非空列表"的话，段内缺 start_time 会在 gen_hyperframes/
-            # export_extras 下游炸裸 KeyError，不指向真正缺的键）
+            # 下游炸裸 KeyError，不指向真正缺的键）
             for j, s in enumerate(ss):
                 _check_sentence_fields(
                     s, f"segments[{i}]（{sg.get('id', '?')}）.sentences[{j}]")

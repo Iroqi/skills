@@ -23,12 +23,10 @@
 - search_images.relevance_score：本地相关性提示分
 - budget：时长估算函数（单句时长随字数/语速缩放、estimate 子命令输出）+
   cost 子命令（配图 credits 成本区间估算）
-- export_extras：章节时间戳/SRT 格式化 + 生成（build_chapters、_fmt_chapter_ts、_fmt_srt_ts）
 - gen_charts：图表校验（labels/values 不匹配、饼图全 0 拒绝）+ bar/line/pie/curve 实际渲染与 4:3 画布尺寸断言（无 matplotlib 时跳过，不影响核心流程判定）
 - split_series：parse_sections（Markdown 标题切分 / 无标题退化为空行分块 / 空文档报错）+
   plan_episodes（target_seconds 与 n_episodes 两种模式都不拆开原始小节）+
   write_skeleton 的 _series_meta（多集才附加、prev/next 互相链接正确、单集不附加）
-- gen_cover：build_title_candidates（去重/封顶 3 条/空 segments）+ _first_sentence/_hex_to_rgb/_gradient_endpoints 几个纯函数
 - run._image_coverage：缺图拦截判定（images.json 不存在时全部 news/seg 段落算 missing、
   部分配图只报未覆盖、opening/closing 不参与、无 segments 字段时无义务）
 
@@ -895,65 +893,6 @@ def main():
         check("budget estimate reports sentence count",
               "共 4 句" in out, out)
 
-    # 14. export_extras（章节时间戳 + SRT）
-    print("\n[13] export_extras")
-    from export_extras import build_chapters, write_chapters, write_srt, _fmt_chapter_ts, _fmt_srt_ts
-
-    check("_fmt_chapter_ts under an hour", _fmt_chapter_ts(65) == "1:05")
-    check("_fmt_chapter_ts over an hour", _fmt_chapter_ts(3725) == "1:02:05")
-    check("_fmt_srt_ts format", _fmt_srt_ts(3725.123) == "01:02:05,123")
-
-    extras_manifest = {
-        "sentences": [
-            {"index": 0, "text": "开场句。", "start_time": 0.0, "duration": 3.0},
-            {"index": 1, "text": "对话第一句。", "start_time": 3.3, "duration": 3.0, "speaker": "主播"},
-            {"index": 2, "text": "对话第二句。", "start_time": 6.6, "duration": 4.0, "speaker": "讲解"},
-            {"index": 3, "text": "结尾句。", "start_time": 70.9, "duration": 2.0},
-        ],
-        "total_duration": 72.9,
-        "segments": [
-            {"id": "opening", "title": "", "sentences": [
-                {"index": 0, "text": "x", "start_time": 0.0, "duration": 3.0}]},
-            {"id": "news1", "title": "反向传播算法", "sentences": [
-                {"index": 1, "text": "x", "start_time": 3.3, "duration": 3.0},
-                {"index": 2, "text": "x", "start_time": 6.6, "duration": 4.0}]},
-            {"id": "closing", "title": "", "sentences": [
-                {"index": 3, "text": "x", "start_time": 70.9, "duration": 2.0}]},
-        ],
-    }
-    chapters = build_chapters(extras_manifest)
-    check("build_chapters count", len(chapters) == 3, chapters)
-    check("build_chapters uses title / id fallback",
-          chapters[0][1] == "开场" and chapters[1][1] == "反向传播算法" and chapters[2][1] == "结尾",
-          chapters)
-    check("build_chapters start times",
-          chapters[0][0] == 0.0 and chapters[1][0] == 3.3 and chapters[2][0] == 70.9, chapters)
-    check("build_chapters no segments -> empty",
-          build_chapters({"sentences": []}) == [])
-
-    with tempfile.TemporaryDirectory() as td:
-        ch_path = os.path.join(td, "chapters.txt")
-        srt_path = os.path.join(td, "captions.srt")
-        write_chapters(extras_manifest, ch_path)
-        write_srt(extras_manifest, srt_path)
-        ch_text = open(ch_path, encoding="utf-8").read()
-        srt_text = open(srt_path, encoding="utf-8").read()
-        check("chapters.txt content", "0:00 开场" in ch_text and "0:03 反向传播算法" in ch_text, ch_text)
-        check("captions.srt has speaker prefix", "[主播] 对话第一句。" in srt_text, srt_text)
-        check("captions.srt timestamp format", "00:00:00,000 --> 00:00:03,000" in srt_text, srt_text)
-        # 长句 SRT 拆条与视频同规则（每条最多两行、时间按占比切分）
-        long3 = "，".join(f"第{i}个要点需要展开说明" for i in range(1, 25)) + "。"
-        srt2 = os.path.join(td, "captions2.srt")
-        write_srt({"sentences": [{"index": 0, "text": long3,
-                                  "start_time": 1.0, "duration": 8.0}],
-                   "total_duration": 9.5}, srt2)
-        srt2_text = open(srt2, encoding="utf-8").read()
-        _blocks = [b for b in srt2_text.split("\n\n") if b.strip()]
-        check("srt split: long sentence yields multiple entries",
-              len(_blocks) >= 2, srt2_text)
-        check("srt split: every entry has at most 2 text lines",
-              all(len(b.strip().split("\n")) <= 4 for b in _blocks), srt2_text)
-
     # 15. gen_charts（配图方式 C：图表；无 matplotlib 时跳过）
     print("\n[14] gen_charts")
     try:
@@ -1055,11 +994,11 @@ def main():
                   (cw_px, ch_px) == (1200, 900), f"{cw_px}×{ch_px}")
             os.remove(curve_path)
 
-    # 16. split_series / gen_cover / budget calibrate
+    # 16. split_series / budget calibrate
     # 这四个都是纯离线逻辑（不依赖真实 TTS/渲染 API），加进来补上上次
     # review 发现的一个真实教训：--on-fail silence 的 resume 标记丢失 bug
     # 是手工构造场景才抓到的，如果当时就有这层覆盖，本该在第一版就被拦住。
-    print("\n[15] split_series / gen_cover / budget calibrate")
+    print("\n[15] split_series / budget calibrate")
     import tempfile as _tf16
 
     # 16b. split_series.parse_sections / plan_episodes
@@ -1098,34 +1037,6 @@ def main():
     flat_titles_n = [t for ep in episodes_n for t, _b, _d in ep]
     check("split_series: n_episodes mode also never splits a section",
           sorted(flat_titles_n) == sorted(["一", "二", "三"]), flat_titles_n)
-
-    # 16c. gen_cover.build_title_candidates / _first_sentence / _hex_to_rgb
-    from gen_cover import build_title_candidates, _first_sentence, _hex_to_rgb, \
-        _gradient_endpoints
-
-    src = {
-        "opening": "今天带来两条重要资讯。",
-        "segments": [
-            {"title": "标题A", "text": "正文A"},
-            {"title": "标题B", "text": "正文B"},
-        ],
-    }
-    cands = build_title_candidates(src)
-    check("gen_cover: first candidate is first segment title",
-          cands and cands[0] == "标题A", cands)
-    check("gen_cover: candidates are deduplicated and capped at 3",
-          len(cands) <= 3 and len(cands) == len(set(cands)), cands)
-    check("gen_cover: empty segments -> no candidates",
-          build_title_candidates({"segments": []}) == [])
-    check("gen_cover: _first_sentence stops at terminal punctuation",
-          _first_sentence("第一句。第二句。") == "第一句。")
-    check("gen_cover: _hex_to_rgb parses 3-digit and 6-digit hex",
-          _hex_to_rgb("#fff") == (255, 255, 255) and _hex_to_rgb("#ff0000") == (255, 0, 0))
-    check("gen_cover: _gradient_endpoints extracts first/last hex",
-          _gradient_endpoints("linear-gradient(135deg,#000000 0%,#ffffff 100%)")
-          == ((0, 0, 0), (255, 255, 255)))
-    check("gen_cover: _gradient_endpoints falls back on no hex found",
-          _gradient_endpoints("none") == ((20, 20, 20), (40, 40, 40)))
 
     # 16g. split_series: _series_meta 只在多集时附加，且 prev/next 链接正确
     with tempfile.TemporaryDirectory() as td:
@@ -1314,14 +1225,6 @@ def main():
     check("自动 body 的首句不再豁免行数预算",
           "if not kept and budget > 0:" in _bfs_src
           and "if kept and need > budget" not in _bfs_src)
-
-    # ⑨ export_extras 曾写死横屏切分参数，竖屏项目导出的 SRT 与片内字幕
-    #   切行不一致（本文件承诺"逐条对齐"）。
-    _exp_src17 = _src("export_extras.py")
-    check("export_extras 按画幅/字幕模式取切分参数",
-          '"--aspect"' in _exp_src17 and "aspect=args.aspect" in _exp_src17
-          and "subtitle_params_for(" in _exp_src17
-          and 'split_subtitle_cues(s["text"])' not in _exp_src17)
 
     # ⑩ "哪些段落需要配图" 的 news/seg 前缀约定曾散落在 5 处、3 种写法
     #   （startswith(元组) / 两个 or 串联 / 注释里复述），改命名规则要动 5
@@ -1537,23 +1440,13 @@ def main():
           and (_lp["max_chars"], _lp["slack"], _lp["hard_cap"]) == (28, 1.5, 34),
           (_vp, _lp))
 
-    # 两个消费者必须共用同一份参数，否则"导出的 SRT 与片内字幕逐条对齐"
-    # 这个承诺会悄悄失效（竖屏/verse 下切行不同）。这是参数收口的回归
-    # 防线——比逐行 grep 数值更抗重构。
+    # 消费者（gen_hyperframes）必须从 subtitle_params_for 取参数——切行
+    # 参数唯一权威来源的回归防线，比逐行 grep 数值更抗重构。
     with open(os.path.join(_skill_root, "scripts", "gen_hyperframes.py"),
               encoding="utf-8") as _gf:
         _gen_src = _gf.read()
-    with open(os.path.join(_skill_root, "scripts", "export_extras.py"),
-              encoding="utf-8") as _ef:
-        _exp_src = _ef.read()
-    check("gen_hyperframes 与 export_extras 都从 subtitle_params_for 取参数",
-          "subtitle_params_for(" in _gen_src
-          and "subtitle_params_for(" in _exp_src
-          and "split_subtitle_cues(" in _exp_src,
-          (("subtitle_params_for(" in _gen_src),
-           ("subtitle_params_for(" in _exp_src)))
-    check("export_extras 已不依赖 split_subtitle_cues 的横屏默认值",
-          "split_subtitle_cues(s[\"text\"])" not in _exp_src)
+    check("gen_hyperframes 从 subtitle_params_for 取切分参数",
+          "subtitle_params_for(" in _gen_src)
 
     # ── 20c. 竖屏 verse 句子流结构与滚动参照系 ───────────────
     # verse-clip 无定位时 verse-line.offsetTop 相对

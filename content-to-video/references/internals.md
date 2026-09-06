@@ -26,7 +26,6 @@ segments_source.json
                                                                       verify_render.py（时长/编码校验）
 ```
 
-补充产出物（可选，不参与上面这条主链路）：`export_extras.py` 读 `timing_manifest.json` → `chapters.txt` + `captions.srt`。
 
 
 ### 路径解析速记

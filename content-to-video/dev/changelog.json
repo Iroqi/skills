@@ -1,7 +1,12 @@
 {
   "_archive": "更早的 47 条（1.1.0 – 1.5.26）已压缩为一行式摘要，见 dev/changelog-archive.md；本文件只保留最近 20 条完整记录。",
-  "current_version": "1.5.51",
+  "current_version": "1.5.52",
   "entries": [
+    {
+      "version": "1.5.52",
+      "date": "2026-09-06",
+      "summary": "砍掉两个平时生成不用的可选模块（用户点名）：①export_extras.py（章节时间戳 chapters.txt + SRT 字幕导出）——timing_manifest.json 本身就有逐句起止时间，B 站投稿也不靠 SRT；②gen_cover.py（竖版封面 + 候选标题草稿）——实际出片从未用过。同步清理：SKILL.md 文件树/工作流命令/封面段落、references 两处、run_eval [4] 真子进程测试与 docstring、selftest [13] 整节 + 16c + ⑨/两消费者共用参数断言（收窄为 gen_hyperframes 单消费者）、_script_utils/gen_hyperframes/pipeline/_contracts 注释口径。subtitle_params_for 保留（gen_hyperframes 仍在用）。验证：dev/check 16/16、selftest 全绿、run_eval 全绿。"
+    },
     {
       "version": "1.5.51",
       "date": "2026-09-06",
@@ -21,11 +26,6 @@
       "version": "1.5.48",
       "date": "2026-09-06",
       "summary": "砍掉横屏 verse 模式，字幕/内容呈现不再有模式区分（用户决策：横屏 verse 实际出片不好看）：模式固定按画幅绑定——横屏恒为 bar（底部字幕条 + 正文要点卡）、竖屏恒为 verse（歌词式句子流），不再是用户可选项。①gen_hyperframes.py：--sub-mode 参数与对应 argparse 守卫删除，generate_html 去掉 sub_mode 形参改为函数内按 aspect 派生（竖屏 ValueError 拦截随之失去存在意义，一并删除）；横屏 verse 专属死代码清除——verse 开场/收尾标题居中分支、#opening/#closing .verse 绝对定位 CSS、有图段独立绝对定位盒/无图段 title-wrap 流内居中两套 verse 窗口定位（verse DOM 统一渲染在 seg-card 尾部由竖屏 flex 钉底）、verse_kills_body 的横屏分支。②run.py/export_extras.py：--sub-mode 参数、解析与透传全删；subtitle_params_for 收窄为只按 aspect 区分（切分参数本就只随画幅变）。③check_series.py：params.sub_mode 退出跨集 drift 对比（aspect 一致则模式必然一致），旧报告残留字段忽略。④selftest 断言同步：横屏 verse 专属测试（独立盒几何/流内居中/开场收尾钉底/标题居中/竖屏显式 bar fail-fast）删除或改写为『横屏产物=bar、竖屏产物=verse』的形态断言 + run.py 源码级『--sub-mode 已移除』断言，533 → 525 条。⑤SKILL.md/rendering.md 模式章节改写为画幅绑定语义。净效果：selftest 523/525（2 个既有 h264 环境项）、dev/check 17/19（同 2 项），门控口径与改动前一致。"
-    },
-    {
-      "version": "1.5.47",
-      "date": "2026-09-05",
-      "summary": "奥卡姆剃刀复检：移除低价值文档与占位文件，不删任何有机械消费者的东西。复检方法不是问『这文件有没有人读』，而是问『删掉它，哪个脚本会先断』——有消费者的（changelog.json ← check.py:494 校验 current_version；wiki/logs.md ← wiki_maintain.py:244 追加；wiki/skill-impact.md ← wiki_gate.py:62-71 在 AUTO_MARKER 处插入行；14 个 pattern ← wiki_maintain --commit 校验契约 + iter_patterns 遍历）一律保留。①删除 dev/wiki/traces/（README 3 行 + .gitkeep）：轨迹默认落 ~/.config/ai-video/traces/，该目录自己写明『保持为空』；CTV_TRACE_DIR 指向任意目录时 scripts/_trace.py 会 os.makedirs 自建（108/326 行），不存在目录缺失导致报错的路径；README 那句『若启用务必加入 .gitignore』从未被执行（.gitignore 里没有这一条）——提醒了一个没人需要过的动作，本身就是该提醒不存在的证据。②删除 3 个 .gitkeep（proposals/ / proposals/incubating/ / .snapshots/）：三个目录都有脚本 os.makedirs(..., exist_ok=True) 兜底（wiki_gate.py:253、wiki_propose.py:175、_wiki_common.py:294），且 zip 本就不含空目录——.gitkeep 对分发包零价值，对 git 仓库的意义也被『脚本会自建』消解。③changelog 归档：67 条 → 保留最近 20 条（1.5.27~1.5.46）完整记录，更早 47 条压成『版本/日期/一句话摘要』写入 dev/changelog-archive.md。依据是 check.py 只校验 current_version 与 JSON 合法性、不读历史条目；老条目的剩余价值是追溯『当初为什么这么改』，而该信息大量已固化在代码注释、patterns/ 与 SKILL.md 里。changelog.json 88K → 39K，归档文件 11K，净省约 38K，信息不丢（首句保留决策线索）。④同步更正受影响的文档引用：wiki/README.md 的目录树删掉 traces/ 一行并补注移除理由；wiki/logs.md 按它自己『只增不改』的原则追加一条更正（不回改 1.5.45 那句『三个目录保留（各有 .gitkeep）』）。净效果：包内文件 75 → 73，dev/changelog.json 88K → 39K；门控 19/19 全绿、selftest 548/548 不变。"
     }
   ]
 }

@@ -1211,7 +1211,7 @@ def generate_html(manifest, audio_src, images=None,
     # ≈28 字；宽容度 1.5（最长行 ~42 字），超长靠多切几行兜底。verse 模式
     # 下切分粒度不影响视觉（同一句的多条 cue 携带相同 si，verseUpdate 幂等），
     # bar 模式下每行直接渲染进字幕条。
-    # 切分参数来自 _script_utils.subtitle_params_for（与 export_extras.py
+    # 切分参数来自 _script_utils.subtitle_params_for（同一份参数来源，
     # 导出的 SRT 共用同一份，保证片内字幕与外挂字幕逐条对齐）。
     _sub_p = subtitle_params_for(aspect)
     _sub_cap = _sub_p["max_chars"]

@@ -271,10 +271,8 @@ def split_subtitle_lines(text, max_chars=28, max_lines=3, slack=1.5, hard_cap=40
 def subtitle_params_for(aspect="landscape"):
     """按画幅给出字幕切分参数——单一权威来源。
 
-    gen_hyperframes.py（片内字幕）与 export_extras.py（SRT）必须共用这份
-    参数：两边各写一份数值时，竖屏下会切出不同的行，导致"导出的
-    SRT 与视频里看到的字幕不是同一套"——export_extras 的 docstring 承诺
-    逐条对齐，参数漂移会让这个承诺悄悄失效。
+    片内字幕（gen_hyperframes.py）的切行参数唯一权威来源——只此一份，
+    不存在两处数值漂移的可能。
 
     字幕/内容呈现模式固定按画幅绑定：横屏 bar、竖屏 verse（无用户
     选项），因此本函数只按 aspect 区分。

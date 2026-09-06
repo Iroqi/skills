@@ -31,7 +31,7 @@ thread 里 forward-test 一遍——这是给 AI 用的评估，不是给真人�
    静音代替 TTS 配音（`_audio.py` 的 `generate_silence`，pipeline.py 自己也用
    同一个函数处理句间停顿，不是本脚本现造的东西），换出一份字段结构与真实
    `timing_manifest.json` 完全一致的 manifest，再喂给 `gen_hyperframes.py`/
-   `export_extras.py`/`verify_render.py` 走一遍真实调用（真子进程，不是 mock
+   `verify_render.py` 走一遍真实调用（真子进程，不是 mock
    断言），能提前抓住"改了某个脚本的输出字段，另一个脚本没跟着改"这类跨脚本
    契约问题。
 2. `run.py` 把第 3 步(TTS)和第 4 步(配图)并行跑的编排逻辑——用两个睡眠时长
@@ -257,14 +257,6 @@ def main():
             for seg in source["segments"]:
                 check(f"HTML 包含标题「{seg['title']}」", seg["title"] in html)
 
-        print("\n[4] export_extras.py 导出章节/字幕（真子进程，真实调用）")
-        r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "export_extras.py"),
-                             "-m", manifest_path, "-o", td],
-                            capture_output=True, text=True, encoding="utf-8", errors="replace")
-        check("export_extras.py 退出码 0", r.returncode == 0, r.stderr[-500:])
-        check("chapters.txt 已生成", os.path.isfile(os.path.join(td, "chapters.txt")))
-        check("captions.srt 已生成", os.path.isfile(os.path.join(td, "captions.srt")))
-
         print("\n[5] 合成测试用 mp4（纯 ffmpeg，不经过 Hyperframes/Chrome）+ verify_render.py 校验")
         ffmpeg_path = get_ffmpeg()
         fake_mp4 = os.path.join(td, "fake_render.mp4")
@@ -397,10 +389,11 @@ def check_run_parallel_orchestration():
             with open(src_path, "w", encoding="utf-8") as f:
                 json.dump(src, f, ensure_ascii=False)
 
-            # (a) 真并发：fake_pipeline 睡 1.8s，fake_search 睡 1.0s。
-            # 顺序执行约 2.8s，并行执行约 max(1.8,1.0)=1.8s。sleep 取大些
-            # 是为了让判定窗口远离机器抖动（门控里 selftest 刚跑完、机器
-            # 忙时 ±0.3s 很常见——曾用 1.2/0.8 窗口 1.8s 出过假红）。
+            # (a) 真并发：fake_pipeline 睡 2.5s，fake_search 睡 1.0s。
+            # 顺序执行约 3.5s，并行执行约 max(2.5,1.0)=2.5s。sleep 取大是
+            # 为了让"并行远小于顺序"的判定窗口吸收子进程 spawn 开销
+            # （venv/Defender 下实测稳定 +0.6s：曾用 1.2s 基准在 2.3 窗口
+            # 连续假红——开销是稳定的，重试救不了，只能拉大绝对时长）。
             run_mod._script = lambda name: {
                 "pipeline.py": fake_pipeline,
                 "search_images.py": fake_search,
@@ -416,11 +409,11 @@ def check_run_parallel_orchestration():
                 t0 = _time.time()
                 run_mod.main()
                 elapsed = _time.time() - t0
-                if elapsed < 2.3:
+                if elapsed < 3.2:
                     break
                 _time.sleep(0.5)
             check("TTS+配图真并行（耗时接近较慢一步，而非两步相加）",
-                  elapsed < 2.3, f"实际耗时 {elapsed:.2f}s（顺序应约 2.8s，并行应约 1.8s，已重试 3 次）")
+                  elapsed < 3.2, f"实际耗时 {elapsed:.2f}s（顺序应约 3.5s，并行应约 2.5s，已重试 3 次）")
 
         # (b) 失败传播：TTS 假脚本以退出码 7 失败，run.py 应该原样传播退出码
         with tempfile.TemporaryDirectory() as td2:
@@ -446,7 +439,7 @@ def check_run_parallel_orchestration():
 FAKE_PIPELINE_SRC = '''import sys, time, os, json
 out = sys.argv[sys.argv.index("-o") + 1]
 os.makedirs(out, exist_ok=True)
-time.sleep(1.8)
+time.sleep(2.5)
 # fixture 必须满足 timing_manifest 契约（顶层 sentences 非空、每段
 # sentences 非空、句子四字段齐全）——run.py 的 _image_coverage 走
 # load_timing_manifest 校验，空列表会被当成坏产物拒收。
