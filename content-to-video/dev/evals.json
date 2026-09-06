@@ -71,7 +71,7 @@
       "id": "vertical_short_video",
       "prompt": "把这几篇文章做成竖屏短视频，发抖音",
       "expect": [
-        "用 --aspect vertical 生成 1080×1920 竖屏",
+        "用 --aspect portrait 生成 1080×1440 竖屏（3:4）",
         "标题/配图/字幕栏位置按竖屏适配"
       ],
       "reject": [

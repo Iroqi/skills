@@ -38,31 +38,32 @@
 - **背景 glow**：径向渐变光晕淡入后做极轻呼吸（opacity 1↔0.85 往复，单程 1.6s），消除长段落中后段的"死屏"感；只动 opacity（合成层友好），有限 repeat 保证时间轴长度确定
 - **body 逐行 stagger**：body 每行依次从左侧滑入（`x:-20→0, opacity:0→1`），行间延迟 0.15s；行内数字串以段落 accent 着色加粗（`.num-accent`），并在该行入场完成后做一次轻微放大回落（数字 pop）——数据类段落的核心信息获得视觉强调
 - **标题弹入**：标题从 0.5x 缩放弹入（`back.out(1.7)`）
-- **Ken Burns 缓推**：配图槽在段内从 scale 1 匀速放大到 1.05（`ease:"none"`，transformOrigin 按 sid 序号在四角轮换），静态配图不再整段静止；≤4s 的短段自动跳过。缩放整个图片槽而非内层 img，圆角与光晕随槽整体缩放、无溢出裁切
 - **入场预算归一化**：全部入场动效时长统一乘以 `k = min(1, max(0.45, 段长/4))`——短段动画加速收束不拖尾，长段维持原速；wipe/fade 转场与进度条不参与（前者承担段间衔接语义，后者必须与音频严格同步）
 - **进度条**：底部进度条从 0% 到 100% 与段落时长同步
 
 **verse 句子流的当前句强调**：字重恒定（600，不做 500/700 切换——字重变化会改变字形宽度，切句瞬间文字横向跳动）；当前句以该段 accent 颜色着色 + 满透明度（JS 从 `.verse-clip[data-accent]` 取色），非活动行为主题色，opacity/color 均 0.3s 过渡。
 
-**新增动效模板键**（`config/template.json` 顶层 `animation` 块）：`glowBreath`（period/min）、`kenBurns`（scale）、`numPop`（duration/scale）。
+**新增动效模板键**（`config/template.json` 顶层 `animation` 块）：`glowBreath`（period/min）、`numPop`（duration/scale）。Ken Burns 缓推动效已移除（2026-09-06 用户决策：图片静态呈现，不再整段缓放）。
 
 ## 开场"内容目录" / 结尾"回顾"标签条（默认自动生成）
 
-只要 `opening`/`closing` 段落没有手写 `body` 字段，就会自动用其余内容段落的标题拼一份内容填进去——开场是竖排编号列表（"内容目录"，逐条从左滑入），结尾是横排 chip 标签（"回顾"，逐个弹入），两种样式特意做了区分。数据直接取自已有的 `segments[].title`，不需要额外的 AI 调用或新的 manifest 字段。条目全量呈现、不封顶：条数多时开场目录字号自动缩小（模板 `agenda.shrinkThreshold`→`shrinkMax` 线性缩到 `minFont`），chips 靠换行容纳。**如果不想要这个自动填充**，只要给 `opening`/`closing` 段落写非空 `body` 字段，就会优先显示手写内容。
+只要 `opening`/`closing` 段落没有手写 `body` 字段，就会自动用其余内容段落的标题拼一份内容填进去——开场是竖排编号列表（"内容目录"，逐条从左滑入），结尾是横排 chip 标签（"回顾"，逐个弹入），两种样式特意做了区分。数据直接取自已有的 `segments[].title`，不需要额外的 AI 调用或新的 manifest 字段。**条目软上限 = 模板 `agenda.maxItems`（默认 7）**：超出时只显示前 7 条并打 `[warn]`（写稿阶段应把内容段控制在 7 条以内；确有必要突破时调大模板值）；上限内条数多时开场目录字号自动缩小（模板 `agenda.shrinkThreshold`→`shrinkMax` 线性缩到 `minFont`），chips 靠换行容纳。**如果不想要这个自动填充**，只要给 `opening`/`closing` 段落写非空 `body` 字段，就会优先显示手写内容。
 
 ## `--images` 额外效果（仅当有配图时）
 
-- 横屏：右侧生成 860×700 圆角图片容器，上缘固定在标题带之下（topNews 80 + 1 行标题高 90 + 30px 间距 = 200px）——单行标题完整避开图片；两行标题的第二行只许横向停在图片左缘（1010px）以左，估算伸入图片区时生成期告警；下缘 900 = 1080 − 字幕条高 176 − 4px 间隙，不与底部字幕条重叠（竖屏 verse：正方形图片槽，占满内容宽度、`aspect-ratio:1/1`（980×980）；紧凑竖屏 portrait：4:3 横版槽 980×735——portrait 高度只有 1440，1:1 方图加 300px 句子流放不下；`border-radius:24px`；横屏尺寸/边距在模板 `image` 段可调）
-- **紧凑竖屏 portrait（`--aspect portrait`，3:4 即 1080×1440）**：复用竖屏布局家族（`data-aspect` 同为竖屏），只切换紧凑参数——顶部留白 100px、底部 80px。用途是规避抖音/快手沉浸式 feed 对标准 9:16 的"按高度铺满裁两侧"行为（3:4 非标准比例会按宽度适配，两侧零裁切、上下留边），选型权衡见 SKILL.md「紧凑竖屏」节
+- 横屏：右侧生成 910×644 圆角图片容器（√2:1——左右各距屏 25px；对 4:3 生图 contain 后左右留边恰约 25px），整屏垂直居中（top 540，上下各留 218/236px）——已知取舍：两行标题（底 260）会与图上缘 218 轻微交叠，单行标题无碍（竖屏 verse：4:3 横版图片槽，占满内容宽度、`aspect-ratio:4/3`（980×735）——portrait 高度只有 1440，1:1 方图加 300px 句子流放不下；`border-radius:24px`；横屏尺寸/边距在模板 `image` 段可调）
+- **竖屏 portrait（`--aspect portrait`，3:4 即 1080×1440）**：唯一的竖屏画幅，紧凑留白——顶部 100px、底部 80px、图片槽 4:3。用途是规避抖音/快手沉浸式 feed 对标准 9:16 的"按高度铺满裁两侧"行为（3:4 非标准比例会按宽度适配，两侧零裁切、上下留边），选型权衡见 SKILL.md「竖屏短视频」节
 - 添加与段落 accent 色匹配的发光晕染（`box-shadow:0 0 80px {accent}40`）
 - 标题区自动移到左侧，为图片腾出空间（竖屏为大标题+图片+句子流的纵向结构，见下条）
-- **标题框与内容框互相独立（横屏配图段）**：正文要点卡（bar 模式）与句子流窗口（verse 模式）都是独立绝对定位盒，不进 `title-wrap` 文档流——锚定模板 `body.top`（= 标题组最坏情况：topNews 80 + 2 行标题高 180 + tagline 槽 16+62 + 30px 间距 = 368），位置不随标题折 1 行还是 2 行浮动，tagline 也永远不会压进内容框。左缘对齐标题文字（badge 版式 205 / flow 版式 50），宽度 = 图片左缘 − 左缘 − 50px 间距 与 maxWidth 取小（badge 755 / flow 870，右缘不探入图片区）。挂载点是 `seg-card` 直接子元素
-- **字幕/内容呈现两模式（`--sub-mode`，横屏可选 verse/bar（默认 bar），竖屏家族只有 verse（显式传 bar 直接报错——竖屏高度放不下 bar 的"字幕条+正文卡"组合）；显式传值强制该模式；cue 数据层两模式同构，切换只影响显示层）**：
-  - `verse` = **"内容与字幕融合"的歌词式句子流**：段落全部句子静态渲染，当前句高亮加粗、已播句淡出，窗口随播报滚动；无底部字幕栏，有图段的正文卡隐藏（信息由句子流逐句完整呈现），无图段保留要点卡片兜底；说话人标签不显示（cue 数据层保留 speaker/spk 字段）。**窗口位置**：竖屏家族（含 portrait）钉在内容区底部、所有段落上边界严格齐平（底部留白 190px/portrait 80px；图片与句子流之间的留白吸收标题行数差异，不传导给窗口位置；开场/收尾标题垂直居中于句子流上方的空间，文字居中）；横屏内容段占据正文卡位置（有图段是独立绝对定位盒，与 bar 正文卡同锚点同宽推导——badge 版式左缘 205 宽 755、flow 版式左缘 50 宽 870，位置不随标题折行浮动；无图段留在 title-wrap 流内 870 居中），开场/收尾保留目录/回顾、句子流钉左列底部（left:50、宽 870、高 300，标题组居中于窗口上方）。窗口内部首尾各留 60px 呼吸内边距（滚动锚点同步 60px），首句/尾句完整落在上下缘渐隐区之外、不被虚化
-  - `bar` = **经典形式**（仅横屏）：底部字幕条（sub-bar，当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示；双人对话在字幕条上方显示说话人标签，配色按字幕条背景亮度自适应（浅底深色系/深底浅色系，按说话人首次出现顺序取色循环）
+- **标题框与内容框互相独立（横屏配图段）**：正文要点卡（bar；模板 `body.card` 控制"卡片/裸文字"外观，默认卡片）是独立绝对定位盒，不进 `title-wrap` 文档流——top = 标题组底部（按标题估算行数动态推导）+ 模板 `body.titleGap`（默认 50px；单行标题时 297，不再预留两行标题的空隙），tagline 也永远不会压进内容框；`body.top`（368）保留为 titleGap 缺省时的回退锚点。左缘 = 模板 `body.leftMargin`（默认 50px），宽度 = 图片左缘 − leftMargin − `body.sideGap`（50px）与 maxWidth 取小（badge / flow 版式几何一致：左 50、宽 910，右缘不探入图片区）。挂载点是 `seg-card` 直接子元素
+- **字幕/内容呈现两形态（固定按画幅绑定：横屏 = bar、竖屏 = verse，无 `--sub-mode` 选项；cue 数据层两形态同构，差异只在显示层）**：
+  - `verse` = **"内容与字幕融合"的歌词式句子流**（竖屏唯一形态）：段落全部句子静态渲染，当前句高亮加粗、已播句淡出，窗口随播报滚动；无底部字幕栏，有图段的正文卡隐藏（信息由句子流逐句完整呈现），无图段保留要点卡片兜底；说话人标签不显示（cue 数据层保留 speaker/spk 字段）。**窗口位置**：竖屏钉在内容区底部、所有段落上边界严格齐平（底部留白 80px；图片与句子流之间的留白吸收标题行数差异，不传导给窗口位置；开场/收尾标题垂直居中于句子流上方的空间，文字居中）。窗口内部首尾各留 60px 呼吸内边距（滚动锚点同步 60px），首句/尾句完整落在上下缘渐隐区之外、不被虚化
+  - `bar` = **经典形式**（横屏唯一形态）：底部字幕条（sub-bar，当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示（卡片为默认外观，模板 `body.card: false` 可切裸文字）；双人对话在字幕条上方显示说话人标签，配色按字幕条背景亮度自适应（浅底深色系/深底浅色系，按说话人首次出现顺序取色循环）
 - GSAP 动画：图片随段落开始淡入+从右侧滑入（`opacity:0 → 1, x:60 → 0, 0.8s`）
 
 ## 生成的 HTML 包含
+
+> **排版改动只动 `config/template.json`**：layout 块是版式参数的唯一来源（含竖屏 segCard.padding / image.aspect / image.marginTop / image.borderRadius / verse 窗口几何、横屏 title.rightInset / agenda.itemGap / chip.gap 等），gen_hyperframes.py 只做读取与拼装；selftest 的排版断言同样从模板推导（仅守护 √2:1、sideGap 关系这类几何不变式，不钉具体数值）——改排版不需要动任何 .py 文件。
 
 - 每个内容段落一个 `<div class="clip" data-start data-duration data-track-index>`
 - GSAP timeline 注册在 `window.__timelines["main"]`
@@ -102,4 +103,4 @@ python scripts/verify_render.py -f out/video.mp4 -m audio_output/timing_manifest
 
 `--quality` 选项：`draft`（低码率，文件约为 standard 的 60%）、`standard`（默认）、`high`。draft 适合快速迭代，正式交付用 standard/high。
 
-> `npx hyperframes render` 的 `--quality` 只控制编码码率，不控制分辨率——它渲染的是 composition HTML 里 `data-width`/`data-height` 声明的尺寸。想要竖屏或其他分辨率，在**生成 HTML 时**用 `gen_hyperframes.py --aspect vertical`（或 `--width`/`--height`）指定，而不是在渲染这一步传参数。
+> `npx hyperframes render` 的 `--quality` 只控制编码码率，不控制分辨率——它渲染的是 composition HTML 里 `data-width`/`data-height` 声明的尺寸。想要竖屏或其他分辨率，在**生成 HTML 时**用 `gen_hyperframes.py --aspect portrait`（或 `--width`/`--height`）指定，而不是在渲染这一步传参数。

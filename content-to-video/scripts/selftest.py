@@ -25,7 +25,6 @@
   cost 子命令（配图 credits 成本区间估算）
 - export_extras：章节时间戳/SRT 格式化 + 生成（build_chapters、_fmt_chapter_ts、_fmt_srt_ts）
 - gen_charts：图表校验（labels/values 不匹配、饼图全 0 拒绝）+ bar/line/pie/curve 实际渲染与 4:3 画布尺寸断言（无 matplotlib 时跳过，不影响核心流程判定）
-- visual_regression._diff_ratio：相同图/明显不同图/尺寸不一致三种像素 diff 判定（无 Pillow 时跳过）
 - split_series：parse_sections（Markdown 标题切分 / 无标题退化为空行分块 / 空文档报错）+
   plan_episodes（target_seconds 与 n_episodes 两种模式都不拆开原始小节）+
   write_skeleton 的 _series_meta（多集才附加、prev/next 互相链接正确、单集不附加）
@@ -320,8 +319,8 @@ def main():
     from _theme import get_default_accent
     default_accent = get_default_accent()
     check("fallback accent", all(s["accent"] == default_accent for s in segs))
-    # 显式 verse：本块断言的是 verse 形态的 DOM（横屏默认已改为 bar）
-    html = generate_html(manifest, "audio/combined.wav", sub_mode="verse")
+    # 横屏默认 bar（模式已固定按画幅绑定，不可传参）
+    html = generate_html(manifest, "audio/combined.wav")
     check("html has audio id", 'id="main-audio"' in html)
     check("html has timeline", 'window.__timelines["main"]' in html)
     check("html duration matches manifest",
@@ -401,7 +400,9 @@ def main():
     html4 = generate_html(manifest4, "audio/combined.wav")
     check("opening agenda suppressed", 'id="agendalist-' not in html4)
     check("closing recap suppressed", 'id="chiprow-' not in html4)
-    # 目录/回顾不封顶：>8 条时全量呈现，不再有"…等共 N 条"提示行
+    # 目录/回顾软上限 = 模板 agenda.maxItems（默认 7）：超出取前 N 条
+    # 显示并打 warn（stderr，不进画面）；"确有必要突破" = 调大模板值。
+    # 不加"等共 N 条"提示行——那是画面上的脏东西。
     many_sents = [
         {"index": i, "text": f"第{i}个要点的内容。",
          "start_time": i * 2.0, "duration": 1.8}
@@ -421,10 +422,16 @@ def main():
         ),
     }
     html_many = generate_html(manifest_many, "audio/combined.wav")
-    check("agenda >8 条全量显示（无封顶截断）",
-          'id="agendaitem-opening-9"' in html_many)
-    check("closing recap >8 条全量显示",
-          'id="recapchip-closing-9"' in html_many)
+    _ag_cap = json.load(open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "config", "template.json"),
+        encoding="utf-8"))["layout"]["landscape"]["agenda"]["maxItems"]
+    check(f"agenda 超过 maxItems({_ag_cap}) 截断到上限",
+          f'id="agendaitem-opening-{_ag_cap - 1}"' in html_many
+          and f'id="agendaitem-opening-{_ag_cap}"' not in html_many)
+    check(f"closing recap 同受 maxItems({_ag_cap}) 截断",
+          f'id="recapchip-closing-{_ag_cap - 1}"' in html_many
+          and f'id="recapchip-closing-{_ag_cap}"' not in html_many)
     check("无 '等共 N 条' 封顶提示行", "等共" not in html_many)
 
     # 3b. flow 自然叙事模式渲染：无编号 badge、无 wipe 扫场、开场预告是
@@ -478,10 +485,8 @@ def main():
         ],
         "total_duration": 5.0,
     }
-    # 长句切行测试用 bar 模式：切出的行直接渲染进字幕条（verse 模式行
-    # 数据只驱动 si，不进显示层）
-    html_long = generate_html(long_cue_manifest, "audio/combined.wav",
-                              sub_mode="bar")
+    # 长句切行测试用横屏（bar）：切出的行直接渲染进字幕条
+    html_long = generate_html(long_cue_manifest, "audio/combined.wav")
     cue_zone = html_long[html_long.find("const cues"):html_long.find("const cues") + 500]
     check("long sentence cue carries multiple lines",
           'lines:["' in cue_zone and '","' in cue_zone, cue_zone[:160])
@@ -533,14 +538,14 @@ def main():
     # 一对颜色——浅色字幕栏（默认 cream）配固定亮色会看不清。锁死两种
     # 主题下应拿到不同颜色，防止这个具体问题再犯。
     html_cream_bar = generate_html(dlg_manifest, "audio/combined.wav",
-                                   theme="cream", sub_mode="bar")
+                                   theme="cream")
     html_dark_bar = generate_html(dlg_manifest, "audio/combined.wav",
-                                  theme="dark", sub_mode="bar")
+                                  theme="dark")
     check("bar mode: speaker colors differ between light/dark bar themes",
           ".sub-speaker.spk-0{color:#1d4ed8}" in html_cream_bar
           and ".sub-speaker.spk-0{color:#7dd3fc}" in html_dark_bar)
     html_three_bar = generate_html(three_spk_manifest, "audio/combined.wav",
-                                   theme="cream", sub_mode="bar")
+                                   theme="cream")
     check("bar mode: speaker color css has >= 6 classes",
           ".sub-speaker.spk-5{color:" in html_three_bar)
 
@@ -1050,42 +1055,12 @@ def main():
                   (cw_px, ch_px) == (1200, 900), f"{cw_px}×{ch_px}")
             os.remove(curve_path)
 
-    # 16. visual_regression / split_series / gen_cover / budget calibrate
+    # 16. split_series / gen_cover / budget calibrate
     # 这四个都是纯离线逻辑（不依赖真实 TTS/渲染 API），加进来补上上次
     # review 发现的一个真实教训：--on-fail silence 的 resume 标记丢失 bug
     # 是手工构造场景才抓到的，如果当时就有这层覆盖，本该在第一版就被拦住。
-    print("\n[15] visual_regression / split_series / gen_cover / budget calibrate")
+    print("\n[15] split_series / gen_cover / budget calibrate")
     import tempfile as _tf16
-
-    # 16a. visual_regression._diff_ratio
-    try:
-        from PIL import Image as _VRImage
-        HAS_PIL_VR = True
-    except ImportError:
-        HAS_PIL_VR = False
-    if not HAS_PIL_VR:
-        print("  [SKIP] 未安装 Pillow，跳过 visual_regression.py 测试")
-    else:
-        from visual_regression import _diff_ratio
-        with _tf16.TemporaryDirectory() as td:
-            p_a = os.path.join(td, "a.png")
-            p_b = os.path.join(td, "b.png")
-            p_c = os.path.join(td, "c.png")
-            _VRImage.new("RGB", (50, 50), (100, 100, 100)).save(p_a)
-            _VRImage.new("RGB", (50, 50), (100, 100, 100)).save(p_b)
-            _VRImage.new("RGB", (50, 50), (200, 0, 0)).save(p_c)
-            mean_diff, changed_pct = _diff_ratio(p_a, p_b)
-            check("visual_regression: identical images -> 0 diff",
-                  mean_diff == 0.0 and changed_pct == 0.0, (mean_diff, changed_pct))
-            mean_diff2, changed_pct2 = _diff_ratio(p_a, p_c)
-            check("visual_regression: clearly different images -> large diff",
-                  mean_diff2 > 50 and changed_pct2 > 0.9, (mean_diff2, changed_pct2))
-
-            p_d = os.path.join(td, "d.png")
-            _VRImage.new("RGB", (60, 60), (100, 100, 100)).save(p_d)
-            mean_diff3, changed_pct3 = _diff_ratio(p_a, p_d)
-            check("visual_regression: size mismatch -> treated as max diff",
-                  mean_diff3 == 255.0 and changed_pct3 == 1.0, (mean_diff3, changed_pct3))
 
     # 16b. split_series.parse_sections / plan_episodes
     from split_series import parse_sections, plan_episodes
@@ -1554,8 +1529,9 @@ def main():
     # 一个共用函数（等价重构）也会红，反而阻碍正常的去重。改成行为断言：
     # 直接问共用函数要参数，再校验两个调用点确实接了这份参数。
     from _script_utils import subtitle_params_for as _sub_params
-    _vp = _sub_params("vertical", "verse")
-    _lp = _sub_params("landscape", "bar")
+    # 模式已按画幅绑定，切分参数只按画幅区分
+    _vp = _sub_params("vertical")
+    _lp = _sub_params("landscape")
     check("vertical subtitle uses aspect-strict cap (22/1.0)",
           (_vp["max_chars"], _vp["slack"], _vp["hard_cap"]) == (22, 1.0, 22)
           and (_lp["max_chars"], _lp["slack"], _lp["hard_cap"]) == (28, 1.5, 34),
@@ -1585,6 +1561,14 @@ def main():
     # 窗口外。断言 clip 定位存在 + verse 钉底（所有段落上边界齐平，
     # 标题行数差异由图片弹性高度吸收）+ 开场/收尾标题垂直居中。
     import gen_hyperframes as _gh2
+    # 竖屏几何断言全部从模板推导（与 gen_hyperframes 同一来源）——
+    # 改 template.json 不该再牵动本文件
+    _tpl_v = _tpl["layout"]["vertical"]
+    _v_pad_t = _tpl_v["segCard"]["padding"]
+    _v_ar_t = _tpl_v["image"]["aspect"]
+    _v_mt_t = _tpl_v["image"]["marginTop"]
+    _v_vh_t = _tpl_v["verse"]["windowHeight"]
+    _v_vc_t = _tpl_v["verse"]["clipPad"]
     _vman = {
         "total_duration": 12.0,
         "sentences": [
@@ -1604,22 +1588,24 @@ def main():
                   "start_time": 7.0, "duration": 3.0}]},
         ],
     }
+    # 竖屏 = portrait（3:4，1080x1440，紧凑留白 + 图片槽 4:3）；
+    # 9:16 非紧凑画幅已从产品形态移除（画幅只留 16:9 横屏 + 3:4 竖屏）
     _vhtml = _gh2.generate_html(_vman, "audio/combined.wav",
-                                width=1080, height=1920, aspect="vertical")
+                                width=1080, height=1440, aspect="portrait")
     check("vertical verse: clip positioned (offsetTop base for scroll)",
-          '.verse-clip{position:relative;padding:60px 0' in _vhtml)
+          f'.verse-clip{{position:relative;padding:{_v_vc_t}px 0' in _vhtml)
     check("vertical verse: pinned to content bottom (uniform top edge)",
           '[data-aspect="vertical"] .verse{position:static!important' in _vhtml
           and 'margin-top:auto!important' in _vhtml)
-    check("vertical image: square slot 980×980 (side padding 50 + "
-          "height:auto + aspect-ratio 1/1)",
-          'padding:220px 50px 190px!important' in _vhtml
-          and 'height:auto!important;aspect-ratio:1/1!important' in _vhtml
-          and 'flex:0 1 auto!important;margin:48px 0 0!important' in _vhtml)
-    check("vertical verse: breathing padding 60px + scroll anchor 60px "
+    check("vertical image: template-driven slot (compact padding + "
+          "aspect + margin-top)",
+          f'padding:{_v_pad_t}!important' in _vhtml
+          and f'height:auto!important;aspect-ratio:{_v_ar_t}!important' in _vhtml
+          and f'flex:0 1 auto!important;margin:{_v_mt_t}px 0 0!important' in _vhtml)
+    check("vertical verse: breathing padding + scroll anchor synced "
           "(first/last line clear of mask fade)",
-          'padding:60px 0' in _vhtml
-          and "Math.min(0, 60 - act.top)" in _vhtml)
+          f'padding:{_v_vc_t}px 0' in _vhtml
+          and f"Math.min(0, {_v_vc_t} - act.top)" in _vhtml)
     check("vertical: opening/closing title vertically centered (margin auto)",
           '#opening .seg-title-wrap,[data-aspect="vertical"] #closing .seg-title-wrap'
           '{text-align:center!important;margin:auto 0!important}' in _vhtml)
@@ -1627,113 +1613,95 @@ def main():
           'data-i="1"' in _vhtml and 'data-i="2"' in _vhtml)
     check("vertical verse: cues carry si for runtime highlight",
           "si:1" in _vhtml and "si:2" in _vhtml)
-    # 横屏显式 verse（默认已按画幅改为 bar）
-    _lhtml = _gh2.generate_html(_vman, "audio/combined.wav",
-                                sub_mode="verse")
-    # 横屏 verse = bar 布局框架 + 内容框换滚动框：内容段 verse 进
-    # title-wrap 文档流（正文卡位置，无图段 870 居中、随标题浮动），
-    # 开场/收尾 agenda 保留、verse 钉左列底部
-    check("landscape verse: DOM present, no sub-bar in either aspect",
-          'class="verse"' in _lhtml
-          and 'class="sub-bar"' not in _lhtml
+    # 模式固定按画幅绑定（不可传参）：横屏产物 = bar（sub-bar 存在、
+    # 无 verse DOM），竖屏产物 = verse（反之）。本断言同时拦"重新暴露
+    # 模式选项"的回退。
+    _lhtml = _gh2.generate_html(_vman, "audio/combined.wav")
+    check("aspect-bound modes: landscape=bar / portrait=verse",
+          'class="sub-bar"' in _lhtml
+          and ".sub-text{" in _lhtml
+          and 'class="verse"' not in _lhtml
           and 'class="sub-bar"' not in _vhtml
-          and ".sub-text{" not in _lhtml)
-    check("landscape verse: in-flow window (body slot) + pinned open/close",
-          '.verse{position:relative;width:100%;height:300px' in _lhtml
-          and ('#opening .verse,#closing .verse{position:absolute;'
-               'left:50px;bottom:60px;width:870px}' in _lhtml)
-          and 'style="width:870px;margin:' in _lhtml)
-    # 有图段的 verse 是独立绝对定位盒（与 body 卡同锚点/同宽推导，
-    # 不进 title-wrap 文档流）：_vman 无 flow 键 → badge 版式，左缘
-    # 205，宽度 = 图片左缘 1010 − 205 − 50 间距 = 755（固定 870 会让
-    # 右缘 1075 压进图片区）。无图段保持流内居中（870 全宽居中版式）。
-    # 两分支都不允许内联 width:100%（继承 title-wrap 全宽、长句右半截
-    # 滑到图片底下被遮，layout 检查器以 text_occluded 暴露）。
+          and 'class="verse"' in _vhtml)
+    # 横屏配图版式（20c2 的图片槽断言用）
     _limhtml = _gh2.generate_html(_vman, "audio/combined.wav",
-                                  sub_mode="verse",
                                   images={"seg1": {"src": "images/x.jpg"}})
-    check("landscape verse: detached window pinned to body column "
-          "(has-image 755 left-anchored / no-image 870 centered)",
-          'style="width:870px;margin:' in _lhtml
-          and f'style="position:absolute;left:205px;top:{_tpl["layout"]["landscape"]["body"]["top"]}px;'
-          'width:755px"' in _limhtml
-          and 'style="width:100%' not in _lhtml
-          and 'style="width:100%' not in _limhtml)
-    check("landscape verse: open/close group centered above verse window",
-          'calc((100% - 380px)/2)' in _lhtml)
     # verse 替代 body 是 DOM 层不渲染（不是 CSS 隐藏）：源码级断言
     # 拦"改回 display:none 兜底"的回退（display:none 方案会让 GSAP
     # stagger 指向隐藏行、layout 检查器量到不可见卡片的 rect）
-    check("verse kills body at DOM level (landscape content + "
-          "vertical has-image)",
-          '(aspect == "landscape" and not _is_oc)' in _gen_src
-          and '(aspect == "vertical" and has_image)' in _gen_src)
+    check("verse kills body at DOM level (vertical has-image)",
+          'sub_mode == "verse" and has_image' in _gen_src)
 
-    # ── 20c2. 横屏图片框上边缘在标题带之下（长标题不遮挡图片）────────
-    # 图片槽 top/height 由标题带推导：上边缘 200 = topNews 80 + 1 行标题
-    # （fontSizeNewsImage 72 × titleLineHeight 1.25 = 90）+ 30px 间距——
-    # 单行标题完整避开；两行标题的第二行（y 170-260）只许横向停在图片
-    # 左缘（1010）以左，估算伸入图片区时生成期告警。下边缘 900 =
-    # 1080 − subtitle.height 176 − 4（字幕条上缘 904 之上 4px 间隙，
-    # 不与字幕条重叠）→ 高 700、中线 550。改标题字号/行高/间距时必须
-    # 同步重推模板 image 值，否则单行标题会压回图片上。
+    # ── 20c2. 横屏图片框 √2:1（整屏垂直居中）────────────────────
+    # 槽 910×644（左右各距屏 25px、910/√2 ≈ 644）：4:3 生图 contain
+    # 后左右留边恰约 25px；槽左缘 985，与正文卡（左 50、宽 910）间
+    # 距 sideGap 25px。垂直居中相对整个画面：top = 1080/2 = 540——
+    # 已知取舍：两行标题（底 260）会与图上缘 218 轻微交叠，单行标题
+    # 无碍；改槽宽/边距时同步重推高（=宽/√2）。
     _tl_l = _tpl["layout"]["landscape"]["title"]
     _img_l = _tpl["layout"]["landscape"]["image"]
-    _band_bottom = (_tl_l["topNews"]
-                    + round(_tl_l["fontSizeNewsImage"] * 1.25) + 30)
-    check("landscape image top edge = 1-line title band bottom",
-          _img_l["top"] - _img_l["height"] / 2 == _band_bottom,
-          f"top_edge={_img_l['top'] - _img_l['height'] / 2} "
-          f"band_bottom={_band_bottom}")
-    check("landscape image bottom clears subtitle bar (4px gap)",
-          _img_l["top"] + _img_l["height"] / 2
-          == 1080 - _tpl["layout"]["landscape"]["subtitle"]["height"] - 4)
+    check("landscape image slot is √2:1 (910×644, 25px screen margins)",
+          1.41 < _img_l["width"] / _img_l["height"] < 1.42
+          and _img_l["right"] == 25
+          and 1920 - _img_l["right"] - _img_l["width"]
+              - (_tpl["layout"]["landscape"]["body"]["leftMargin"]
+                 + _tpl["layout"]["landscape"]["body"]["maxWidth"])
+              == _tpl["layout"]["landscape"]["body"]["sideGap"])
+    check("landscape image vertically centered on full frame",
+          _img_l["top"] == 1080 // 2)
     check("landscape title.topImageCenter removed (centering branch gone)",
           "topImageCenter" not in _tl_l
           and "topImageCenter" not in _gen_src)
-    # 带图横屏 HTML 落位：图片槽 top:550/height:700（上边缘 200），
-    # 标题顶部锚定 topNews 80（无 translateY 居中）
-    check("landscape image slot pinned below title band "
-          "(top:550px height:700px)",
-          "top:550px" in _limhtml and "height:700px" in _limhtml
-          and "width:860px" in _limhtml)
+    # 带图横屏 HTML 落位：图片槽 top/尺寸直接来自模板（整屏垂直居中），
+    # 标题顶部锚定 topNews（无 translateY 居中）；右缘缩进 rightInset
+    check("landscape image slot frame-centered (values from template)",
+          f'top:{_img_l["top"]}px' in _limhtml
+          and f'height:{_img_l["height"]}px' in _limhtml
+          and f'width:{_img_l["width"]}px' in _limhtml)
     check("landscape image segment title top-anchored at topNews "
           "(no vertical centering)",
-          'left:205px;right:auto;width:1605px;top:80px' in _limhtml
+          f'left:{_tl_l["leftWithBadge"]}px;right:auto;'
+          f'width:{1920 - _tl_l["leftWithBadge"] - _tl_l["rightInset"]}px;'
+          f'top:{_tl_l["topNews"]}px' in _limhtml
           and "top:46%" not in _limhtml)
-    # 超长标题（第二行伸入图片区 / 3 行以上）生成时告警，避免静默压图
-    check("landscape title whose 2nd line reaches image zone warns "
-          "at generation time",
-          "_est_w > _tw_px + _l2_safe" in _gen_src)
+    # 标题行数估算保留（供正文卡动态 top 推导）；图框 √2:1 后上缘 292
+    # 已在两行标题底 260 之下，"第二行伸入图片区"告警随其前提一并移除
+    check("landscape title-line estimation kept for body top derivation",
+          "_est_lines = 1 if _est_w <= _tw_px else 2" in _gen_src
+          and "_l2_safe" not in _gen_src)
 
     # ── 20c3. 横屏配图段内容框独立于标题框 ─────────────────────────
     # 标题框（title-wrap）与内容框（body 卡 / verse 窗口）不用同一容器
-    # 约束：body 卡是独立绝对定位盒，锚定模板 body.top = 标题组最坏
-    # 情况（2 行标题 y 260 + tagline 槽 marginTop 16 + 44×1.4≈62 =
-    # y 338）之下 30px = 368——位置不随标题折 1 行还是 2 行浮动；
-    # tagline 是标题组固定成员、必须计入锚点（漏算会让 tagline 压进
-    # body 卡，layout 检查器以 content_overlap 暴露）；
-    # 宽度 = 图片左缘 − 左缘 − 50px 间距 与 maxWidth 取小（badge 版式
-    # 左缘 205 → 755；flow 版式左缘 50 → 870，右缘 920 距图片左缘
-    # 1010 留 90px）。挂载点必须是 seg-card 直接子元素（挂 title-wrap
-    # 里会以它为定位参照系，top 被二次偏移）。
+    # 约束：body 卡是独立绝对定位盒，top = 标题组底部 + body.titleGap
+    # （标题组底部按标题估算行数动态推导——单行标题不留两行标题的空隙；
+    # body.top 保留为 titleGap 缺省时的回退锚点）；tagline 是标题组固定
+    # 成员、必须计入推导（漏算会让 tagline 压进 body 卡，layout 检查器
+    # 以 content_overlap 暴露）；左缘 = body.leftMargin，宽度右缘与图片
+    # 左缘保持 body.sideGap（badge / flow 版式几何一致）。挂载点必须是
+    # seg-card 直接子元素（挂 title-wrap 里会以它为定位参照系，top 被
+    # 二次偏移）。
     _bd_l = _tpl["layout"]["landscape"]["body"]
     _tgl_l = _tpl["layout"]["landscape"]["tagline"]
-    check("landscape body.top = title-group worst case (2-line title "
-          "+ tagline slot) + 30px",
-          _bd_l.get("top")
-          == _tl_l["topNews"]
-          + 2 * round(_tl_l["fontSizeNewsImage"] * 1.25)
-          + _tgl_l["marginTop"]
-          + round(_tgl_l["fontSize"] * _tgl_l["lineHeight"]) + 30,
-          f"body.top={_bd_l.get('top')}")
+    check("landscape body.titleGap configured (dynamic top), body.top "
+          "kept as fallback anchor",
+          "titleGap" in _bd_l and "leftMargin" in _bd_l
+          and "sideGap" in _bd_l and _bd_l.get("top") is not None)
     check("landscape tagline has explicit lineHeight (deterministic "
-          "slot height for body.top derivation)",
+          "slot height for body top derivation)",
           "lineHeight" in _tgl_l and isinstance(_tgl_l["lineHeight"],
                                                 (int, float)))
     _bimg_l = 1920 - _img_l["right"] - _img_l["width"]
-    _w_badge = min(_bd_l["maxWidth"], _bimg_l - _tl_l["leftWithBadge"] - 50)
-    _w_flow = min(_bd_l["maxWidth"], _bimg_l - 50 - 50)
+    _w_badge = min(_bd_l["maxWidth"],
+                   _bimg_l - _bd_l["leftMargin"] - _bd_l["sideGap"])
+    _w_flow = _w_badge
+    # 动态 top：单行标题（两个 fixture 的标题都是单行）的标题组底部
+    # + titleGap，与生成器公式一致
+    _btop = int(_tl_l["topNews"]
+                + _tl_l["fontSizeNewsImage"] * _tpl["typography"]["titleLineHeight"]
+                + _tgl_l["marginTop"]
+                + _tgl_l["fontSize"] * _tgl_l["lineHeight"]
+                + _bd_l["titleGap"])
+    _bleft = _bd_l["leftMargin"]
     _bman = {
         "total_duration": 9.0,
         "sentences": [
@@ -1756,15 +1724,14 @@ def main():
                   "duration": 3.0}]},
         ],
     }
-    # badge 版式（无 flow 键）：body 卡 left:205、宽 755、独立锚定
-    # body.top（tagline 为空也锚同一位置——锚点是标题组最坏情况的
-    # 固定值，不随段落内容浮动）
-    _btop = _bd_l["top"]
-    _bdh = _gh2.generate_html(_bman, "audio/combined.wav", sub_mode="bar",
+    # badge 版式（无 flow 键）：body 卡 left = body.leftMargin、宽右缘
+    # 距图片左缘 sideGap、top = 标题组底部 + titleGap（tagline 为空也
+    # 计入 tagline 槽——它是标题组的固定成员）
+    _bdh = _gh2.generate_html(_bman, "audio/combined.wav",
                               images={"seg1": {"src": "images/x.jpg"}})
-    check("landscape body card detached (absolute, left 205 / "
-          f"top {_btop} / width {_w_badge})",
-          f'style="position:absolute;left:205px;top:{_btop}px;'
+    check("landscape body card detached (absolute, "
+          f"left {_bleft} / top {_btop} / width {_w_badge})",
+          f'style="position:absolute;left:{_bleft}px;top:{_btop}px;'
           f'width:{_w_badge}px;margin-top:0"' in _bdh)
     # DOM 独立：body 卡在 title-wrap 之外（图片元素之后、seg-card 直挂）
     check("landscape body card mounted outside title-wrap "
@@ -1772,34 +1739,23 @@ def main():
           _bdh.find('class="seg-image"') < _bdh.find('id="body-seg1"')
           and _bdh.find('class="seg-title-wrap"')
           < _bdh.find('class="seg-image"'))
-    # flow 版式（无 badge）：左缘 50、宽 870、右缘 920 不压图片左缘 1010
+    # flow 版式（无 badge）：几何与 badge 版式一致（leftMargin 统一左缘，
+    # 宽右缘 960 不压图片左缘 1010）
     _bman_flow = dict(_bman, flow=True)
     _bfh = _gh2.generate_html(_bman_flow, "audio/combined.wav",
-                              sub_mode="bar",
                               images={"seg1": {"src": "images/x.jpg"}})
-    check("landscape flow body card detached (left 50 / "
-          f"top {_btop} / width {_w_flow})",
-          f'style="position:absolute;left:50px;top:{_btop}px;'
+    check("landscape flow body card detached (left "
+          f"{_bleft} / top {_btop} / width {_w_flow})",
+          f'style="position:absolute;left:{_bleft}px;top:{_btop}px;'
           f'width:{_w_flow}px;margin-top:0"' in _bfh
           and 'class="badge"' not in _bfh)
 
-    # ── 20d. bar 模式（经典形式）：仅横屏可用；竖屏家族 fail-fast ──
-    _bhtml = _gh2.generate_html(_vman, "audio/combined.wav", sub_mode="bar")
+    # ── 20d. bar 形态（经典形式）：横屏固定模式 ─────────────────
+    _bhtml = _gh2.generate_html(_vman, "audio/combined.wav")
     check("bar mode: sub-bar DOM present, verse DOM absent",
           'class="sub-bar"' in _bhtml and 'class="verse"' not in _bhtml)
     check("bar mode: body cards rendered (no verse replacement)",
           '.sub-speaker{' in _bhtml and 'subEls' in _bhtml)
-    # 竖屏只有 verse：显式 bar 必须在函数层 raise（fail-fast，不是
-    # 静默降级成 verse——静默换模式会让调用方以为拿到了 bar 产物）
-    try:
-        _gh2.generate_html(_vman, "audio/combined.wav",
-                           width=1080, height=1920, aspect="vertical",
-                           sub_mode="bar")
-        _vbar_err = None
-    except ValueError as e:
-        _vbar_err = str(e)
-    check("vertical rejects bar mode (fail-fast ValueError)",
-          _vbar_err is not None and "竖屏" in _vbar_err)
 
     # ── 20e. portrait 紧凑竖屏（3:4，1080x1440）─────────────────
     # portrait 在 generate_html 本体内归一化为 vertical 布局家族
@@ -1809,30 +1765,26 @@ def main():
     check("portrait: normalized into vertical layout family",
           'data-aspect="vertical"' in _phtml
           and 'data-width="1080" data-height="1440"' in _phtml)
-    check("portrait verse: compact padding + 4:3 image slot",
-          'padding:100px 50px 80px!important' in _phtml
-          and 'aspect-ratio:4/3!important' in _phtml)
+    check("portrait verse: compact padding + image slot (from template)",
+          f'padding:{_v_pad_t}!important' in _phtml
+          and f'aspect-ratio:{_v_ar_t}!important' in _phtml)
     _bphtml = _gh2.generate_html(_vman, "audio/combined.wav",
                                  width=1080, height=1440, aspect="portrait")
     check("portrait verse: sub-bar absent (vertical family is verse-only)",
           'class="verse"' in _bphtml
           and 'class="sub-bar"' not in _bphtml)
 
-    # ── 20f. sub_mode 默认按画幅解析：横屏 bar、竖屏家族 verse ─────
-    # 不传 sub_mode 时 generate_html 自行解析（CLI --sub-mode 默认 None
-    # 透传到此）；显式传值不受影响（上方 20d/20e 已覆盖显式两模式）
+    # ── 20f. 模式固定按画幅绑定：横屏 bar、竖屏 verse ────────────
+    # 模式不是用户选项，generate_html 内部按画幅解析（上方 20c 已断言
+    # 不可传参；这里补默认调用的两画幅产物形态）
     _def_l = _gh2.generate_html(_vman, "audio/combined.wav")
     check("default: landscape resolves to bar (sub-bar present, "
           "verse absent)",
           'class="sub-bar"' in _def_l and 'class="verse"' not in _def_l)
     _def_v = _gh2.generate_html(_vman, "audio/combined.wav",
-                                width=1080, height=1920, aspect="vertical")
+                                width=1080, height=1440, aspect="portrait")
     check("default: vertical resolves to verse",
           'class="verse"' in _def_v and 'class="sub-bar"' not in _def_v)
-    _def_p = _gh2.generate_html(_vman, "audio/combined.wav",
-                                width=1080, height=1440, aspect="portrait")
-    check("default: portrait resolves to verse (follows vertical family)",
-          'class="verse"' in _def_p and 'class="sub-bar"' not in _def_p)
 
     # ── 20c. timing_manifest segments 契约（原 20b：与竖屏字幕节重号）──
     # gen_hyperframes 对 seg["sentences"] 直接下标访问，缺失时炸裸
@@ -2052,12 +2004,11 @@ def main():
     check("run.py: portrait accepted with 1080x1440 verify size",
           '"portrait"' in _run22
           and '"1080x1440"' in _run22)
-    # 22e3 run.py 的 sub_mode 按画幅解析（与 gen_hyperframes 同规则），
-    # 报告 params 记解析后的显式值而不是 null
-    check("run.py: sub_mode default resolves by aspect "
-          "(landscape->bar, else verse)",
-          'args.sub_mode = ("bar" if args.aspect == "landscape"'
-          ' else "verse")' in _run22)
+    # 22e3 模式固定按画幅绑定：run.py 不再暴露 --sub-mode 选项（横屏
+    # bar、竖屏 verse 由 gen_hyperframes 内部按画幅决定）
+    check("run.py: --sub-mode removed (aspect-bound modes)",
+          "--sub-mode" not in _run22
+          and "横屏 bar、竖屏 verse" in _run22)
     # 22e2 both 的 check 轮换隔离（hyperframes check 对项目里两个根
     # composition 报 multiple_root_compositions；selftest 不真跑全管线，
     # 这里断言隔离/恢复机制的关键行存在——注意不要用 "try:" 这类几乎
@@ -2070,12 +2021,16 @@ def main():
           and "index.vertical.html" in _run22
           and 'args.aspect == "both"' in _run22)
 
-    # 22f 字幕 DOM 逻辑按模式隔离：verse 输出不含 sub-bar 相关 JS/DOM
-    # （含行透明度 lop*op 双重相乘那套逻辑）；bar 输出则完整携带
+    # 22f 字幕 DOM 逻辑按画幅隔离：verse（竖屏）输出不含 sub-bar 相关
+    # JS/DOM（含行透明度 lop*op 双重相乘那套逻辑）；bar（横屏）输出则
+    # 完整携带
+    _verse_dom_html = _gh2.generate_html(manifest, "audio/combined.wav",
+                                         width=1080, height=1440,
+                                         aspect="portrait")
     check("verse mode: sub-bar DOM/JS logic absent",
-          "rows[r].style.opacity" not in html
-          and "subEls" not in html
-          and ".sub-text{" not in html)
+          "rows[r].style.opacity" not in _verse_dom_html
+          and "subEls" not in _verse_dom_html
+          and ".sub-text{" not in _verse_dom_html)
     check("bar mode: sub-bar row stagger opacity logic present",
           "rows[r].style.opacity = lop;" in html_long
           and "lop * op" not in html_long)
@@ -2311,652 +2266,29 @@ def main():
         check("run.py: 缺图分支调用了分流函数",
               "_split_missing_by_candidates(" in _run_src23g)
 
-    # 25. 自进化闭环：Raw Layer（_trace）与 Wiki Layer 基建（_wiki_common）
-    # 全离线、零 API；所有写盘都落在临时目录，不在技能目录里留任何东西。
-    print("\n[25] 自进化闭环")
-    import tempfile as _tf25
-    import _trace as _tr25
+    # 25. 门控摘要口径（wiki 自进化体系已于 1.5.51 奥卡姆剃刀砍除；
+    # parse_summary_totals 内联进 dev/check.py，这里钉住接线与语义）
+    print("\n[25] 门控摘要口径")
 
     def _read_src25(name):
         with open(os.path.join(HERE, name), "r", encoding="utf-8") as f:
             return f.read()
 
-    # ── 去敏：本模块对外承诺"不记录绝对路径/密钥"，这条必须机械保证 ──
-    check("_trace: scrub 抹掉 sk- 风格 key",
-          "<redacted>" in _tr25._scrub("MIMO_API_KEY=sk-abcdef1234567890abcd"))
-    check("_trace: scrub 抹掉 key: value 形态",
-          "<redacted>" in _tr25._scrub("api_key: sk-liveZZZZ9999xxxx"))
-    check("_trace: scrub 抹掉绝对路径只留末段",
-          _tr25._scrub("ffmpeg error at /home/alice/videos/out.mp4")
-          .endswith("<path>/out.mp4"))
-    check("_trace: scrub 不误伤普通 basename",
-          _tr25._scrub("script=pipeline.py") == "script=pipeline.py")
-
-    # ── 记录结构 ──
-    _rec25 = _tr25.build_record(
-        outcome="ok", params={"aspect": "landscape", "workers": 6},
-        stages=[{"name": "TTS", "seconds": 1.0, "ok": True}])
-    check("轨迹: 含 v/id/ts/outcome/env/params/stages/fallbacks 字段",
-          all(k in _rec25 for k in ("v", "id", "ts", "outcome", "env",
-                                    "params", "params_hash", "stages",
-                                    "fallbacks")))
-    check("轨迹: params_hash 与键顺序无关",
-          _tr25.params_hash({"a": 1, "b": 2}) == _tr25.params_hash({"b": 2, "a": 1}))
-    check("轨迹: 兜底信号能从 skipped 里反推出来",
-          "纯文字版兜底" in _tr25.build_record(
-              outcome="ok", skipped=["配图：无 Key，走纯文字版兜底"])["fallbacks"])
-    check("轨迹: 缺图会记成兜底信号",
-          any("缺图" in x for x in _tr25.build_record(
-              outcome="ok", images={"total": 8, "matched": 6,
-                                    "missing": 2})["fallbacks"]))
-
-    # ── 落盘 / 隐私：project_key 是加盐哈希，不是路径原文 ──
-    with _tf25.TemporaryDirectory() as _td25:
-        _old_env = os.environ.get("CTV_TRACE_DIR")
-        os.environ["CTV_TRACE_DIR"] = _td25
-        try:
-            _pk = _tr25.project_key(_td25)
-            _pk2 = _tr25.project_key(_td25)
-            check("轨迹: project_key 对同一项目稳定", _pk == _pk2 and bool(_pk))
-            check("轨迹: project_key 是哈希不是路径原文",
-                  bool(_pk) and len(_pk) == 12 and _pk not in _td25)
-            _p25 = _tr25.record_run(outcome="ok", params={"a": 1},
-                                    stages=[{"name": "TTS", "seconds": 0.1,
-                                             "ok": True}], project_path=_td25)
-            check("轨迹: record_run 落盘成功",
-                  _p25 is not None and os.path.isfile(_p25))
-            check("轨迹: 落盘内容可被读回",
-                  len(list(_tr25.iter_traces())) == 1)
-            # 剪枝：0 表示"不限制"（不是"清空"），超上限的按新旧滚动删除
-            for _i in range(3):
-                _tr25.write_record(_tr25.build_record(outcome="ok"))
-            check("轨迹: prune 上限 0 表示不限制（不删任何）",
-                  _tr25.prune(max_traces=0, max_age_days=0) == 0)
-            check("轨迹: dry-run 预告删除数但不真删",
-                  _tr25.prune(max_traces=1, max_age_days=0, dry_run=True) == 3
-                  and len(list(_tr25.iter_traces())) == 4)
-            check("轨迹: 真删按条数滚动到上限",
-                  _tr25.prune(max_traces=1, max_age_days=0) == 3
-                  and len(list(_tr25.iter_traces())) == 1)
-
-            # 自动剪枝：DEFAULT_MAX_TRACES 若只在"手动跑 prune"时才生效，那它
-            # 根本不是默认值——轨迹会无限增长。写盘路径自己必须兜住。
-            _orig_cap = _tr25.DEFAULT_MAX_TRACES
-            _tr25.DEFAULT_MAX_TRACES = 2
-            try:
-                for _i in range(5):
-                    _tr25.write_record(_tr25.build_record(outcome="ok"))
-                _left = len(list(_tr25.iter_traces()))
-                check("轨迹: 落盘自动剪枝，条数不超上限", _left == 2, _left)
-                check("轨迹: 自动剪枝保留的是最新的（本次刚写的还在）",
-                      any(_r.get("outcome") == "ok"
-                          for _p, _r in _tr25.iter_traces()))
-            finally:
-                _tr25.DEFAULT_MAX_TRACES = _orig_cap
-            # 剪枝抛异常也不能把落盘结果吞掉（旁路不得破坏主流程）
-            def _boom(*_a, **_k):
-                raise RuntimeError("boom")
-            _orig_prune = _tr25.prune
-            _tr25.prune = _boom
-            try:
-                _p_ok = _tr25.write_record(_tr25.build_record(outcome="ok"))
-                check("轨迹: 剪枝抛异常也不吞掉本次落盘",
-                      _p_ok is not None and os.path.isfile(_p_ok))
-            finally:
-                _tr25.prune = _orig_prune
-        finally:
-            if _old_env is None:
-                os.environ.pop("CTV_TRACE_DIR", None)
-            else:
-                os.environ["CTV_TRACE_DIR"] = _old_env
-
-    # ── Wiki Layer 契约 ──
-    _dev25 = os.path.join(os.path.dirname(HERE), "dev")
-    if _dev25 not in sys.path:
-        sys.path.insert(0, _dev25)
-    import _wiki_common as _W25
-
-    _okp, _errp, _metap = _W25.validate_pattern(
-        os.path.join(_W25.PATTERNS_DIR, "p01-python-version-fiction.md"))
-    check("wiki: 合法 pattern 通过契约", _okp and not _errp)
-    check("wiki: 合法 pattern 能解析出 type", _metap.get("type") == "failure")
-
-    with _tf25.TemporaryDirectory() as _td25b:
-        _bad25 = os.path.join(_td25b, "p99-broken.md")
-        with open(_bad25, "w", encoding="utf-8") as f:
-            f.write("---\nid: p99-broken\ntype: nonsense\n---\n"
-                    + "正文要足够长才能过最短长度门槛，" * 8)
-        _okb, _errb, _ = _W25.validate_pattern(_bad25)
-        check("wiki: 缺字段/非法枚举的 pattern 被拒",
-              (not _okb) and any("缺字段" in e or "非法" in e for e in _errb))
-
-        _bad25c = os.path.join(_td25b, "p98-other.md")
-        with open(_bad25c, "w", encoding="utf-8") as f:
-            f.write("---\nid: totally-different\ntype: failure\ntitle: t\n"
-                    "first_seen: 2026-08-31\nsource: s\nconfidence: high\n"
-                    "status: active\n---\n## 现象\n" + "x" * 100
-                    + "\n## 机制\n" + "y" * 100)
-        _okc, _errc, _ = _W25.validate_pattern(_bad25c)
-        check("wiki: id 与文件名不一致被拒",
-              (not _okc) and any("不一致" in e for e in _errc))
-
-        # ── 提议：单原子约束 ──
-        _tgt25 = os.path.join(_td25b, "doc.md")
-        with open(_tgt25, "w", encoding="utf-8") as f:
-            f.write("alpha AAA beta\nsecond AAA line\nunique BBB end\n")
-        _base25 = {"id": "t", "created": "2026-01-01T00:00:00+00:00",
-                   "pattern_refs": ["p01-python-version-fiction"],
-                   "rationale": "r", "expected_impact": "e"}
-
-        _dup = dict(_base25, target="doc.md", old="AAA", new="CCC")
-        _okd, _errd = _W25.validate_proposal(_dup, _td25b)
-        check("提议: old 出现多次 → 判不原子",
-              (not _okd) and any("唯一" in e for e in _errd))
-
-        _miss = dict(_base25, target="doc.md", old="NOT-THERE", new="X")
-        _okm, _errm = _W25.validate_proposal(_miss, _td25b)
-        check("提议: old 不存在 → 被拒",
-              (not _okm) and any("不存在" in e for e in _errm))
-
-        _prot = dict(_base25, target="dev/wiki/README.md", old="x", new="y")
-        _okpr, _errpr = _W25.validate_proposal(_prot, _td25b)
-        check("提议: 目标在 dev/wiki/ 保护路径 → 被拒",
-              (not _okpr) and any("保护路径" in e for e in _errpr))
-
-        _noref = dict(_base25, pattern_refs=[], target="doc.md",
-                      old="BBB", new="DDD")
-        _okn, _errn = _W25.validate_proposal(_noref, _td25b)
-        check("提议: pattern_refs 为空 → 被拒",
-              (not _okn) and any("不得为空" in e for e in _errn))
-
-        _badref = dict(_base25, pattern_refs=["no-such-pattern"],
-                       target="doc.md", old="BBB", new="DDD")
-        _okbr, _errbr = _W25.validate_proposal(_badref, _td25b)
-        check("提议: 引用不存在的 pattern → 被拒",
-              (not _okbr) and any("不存在" in e for e in _errbr))
-
-        _good = dict(_base25, target="doc.md", old="unique BBB end",
-                     new="unique DDD end")
-        _okg, _errg = _W25.validate_proposal(_good, _td25b)
-        check("提议: 单处唯一的合法改动 → 通过", _okg and not _errg)
-
-        # ── 路径归一化与越界防护 ──
-        # lstrip("./") 会把 .gitignore 削成 gitignore，快照静默变空、回滚报
-        # "还原 0 个文件"还装成功——安全网是空的。这条必须钉死。
-        check("提议: 路径归一化不吃掉 dotfile 的前导点",
-              _W25._norm_rel(".gitignore") == ".gitignore"
-              and _W25._norm_rel(".env.example") == ".env.example")
-        check("提议: 路径归一化仍会剥掉前导 ./",
-              _W25._norm_rel("./SKILL.md") == "SKILL.md"
-              and _W25._norm_rel("./a/b.md") == "a/b.md")
-
-        _esc = dict(_base25, target="../outside.md", old="x", new="y")
-        _oke, _erre = _W25.validate_proposal(_esc, _td25b)
-        check("提议: 目标含 ../ 穿越 → 被拒",
-              (not _oke) and any("穿越" in e for e in _erre))
-
-        _abs = dict(_base25, target="/etc/passwd", old="x", new="y")
-        _oka, _erra = _W25.validate_proposal(_abs, _td25b)
-        check("提议: 目标是绝对路径 → 被拒",
-              (not _oka) and any("绝对路径" in e or "穿越" in e for e in _erra))
-
-        check("提议: 危险路径判定覆盖 Windows 盘符与多级穿越",
-              _W25._is_unsafe_rel("C:/windows/win.ini")
-              and _W25._is_unsafe_rel("a/../../b.md")
-              and not _W25._is_unsafe_rel("references/internals.md"))
-
-        # ── 快照往返（指到临时目录，不在技能目录留文件）──
-        _orig_snap = _W25.SNAPSHOTS_DIR
-        try:
-            _W25.SNAPSHOTS_DIR = os.path.join(_td25b, "snaps")
-            _W25.snapshot(["doc.md"], "snap-25", _td25b)
-            with open(_tgt25, "w", encoding="utf-8") as f:
-                f.write("被后续操作覆盖了\n")
-            _n25 = _W25.restore("snap-25", _td25b)
-            with open(_tgt25, "r", encoding="utf-8") as f:
-                _restored = f.read()
-            check("快照: restore 返回还原文件数", _n25 == 1)
-            check("快照: 内容被完整还原",
-                  "alpha AAA beta" in _restored and "unique BBB end" in _restored)
-            check("快照: 不存在的快照 id 返回 None",
-                  _W25.restore("no-such-snap", _td25b) is None)
-
-            # dotfile 的快照往返：曾经因为路径归一化把 .gitignore 削成
-            # gitignore，快照静默记 0 个文件，回滚时报"还原 0 个"还装成功
-            _dot25 = os.path.join(_td25b, ".gitignore")
-            with open(_dot25, "w", encoding="utf-8") as f:
-                f.write("原始 dotfile 内容\n")
-            _W25.snapshot([".gitignore"], "snap-dot", _td25b)
-            with open(_dot25, "w", encoding="utf-8") as f:
-                f.write("被改坏了\n")
-            _nd = _W25.restore("snap-dot", _td25b)
-            with open(_dot25, "r", encoding="utf-8") as f:
-                _dot_back = f.read()
-            check("快照: dotfile 也能被快照（不再是空 manifest）", _nd == 1)
-            check("快照: dotfile 内容被还原到原路径",
-                  "原始 dotfile" in _dot_back and "被改坏了" not in _dot_back)
-            check("快照: 不会在同级多出一个被削掉点的文件",
-                  not os.path.exists(os.path.join(_td25b, "gitignore")))
-            # 快照源不存在必须抛错，不能静默留一份还原不了的空快照
-            try:
-                _W25.snapshot(["no-such-file.md"], "snap-bad", _td25b)
-                _raised = False
-            except FileNotFoundError:
-                _raised = True
-            check("快照: 源不存在时抛错而不是留空快照", _raised)
-        finally:
-            _W25.SNAPSHOTS_DIR = _orig_snap
-
-    # ── run.py 的轨迹旁路接线（防"加了模块没接线"）──
-    _rs25 = _read_src25("run.py")
-    check("run.py: 有 --no-trace 开关", '"--no-trace"' in _rs25)
-    check("run.py: atexit 钩子已注册", "atexit.register(_emit_trace)" in _rs25)
-    check("run.py: dry-run 与 --no-trace 都会关掉轨迹",
-          "(not args.dry_run) and (not args.no_trace)" in _rs25)
-    check("run.py: 正常收尾登记 ok", '_note_outcome("ok")' in _rs25)
-    check("run.py: 缺图拦截登记 missing_images",
-          '_note_outcome("missing_images"' in _rs25)
-    check("run.py: 步骤失败登记 step_failed",
-          '_note_outcome("step_failed"' in _rs25)
-    check("run.py: 各失败路径都记了 failure 详情",
-          _rs25.count('_note_outcome("step_failed"') >= 3)
-
-    # ── 门控口径：子脚本的真实明细数必须透传上来 ──
-    # 早先的实现只记"这个子进程过了"，于是摘要显示成 "selftest 1/1"——看着
-    # 像全局只跑了 1 项检查。这是伪装成信息的误导，必须钉住。
-    check("门控口径: 能取到子脚本自报的明细数",
-          _W25.parse_summary_totals(
-              "noise\n__SUMMARY_JSON__ "
-              + json.dumps({"passed": 443, "total": 443})) == (443, 443))
-    check("门控口径: 没有摘要时返回 (None, None) 而不是瞎猜",
-          _W25.parse_summary_totals("完全没有摘要行") == (None, None))
-    check("门控口径: 摘要里缺 passed/total 也返回 (None, None)",
-          _W25.parse_summary_totals('__SUMMARY_JSON__ {"ok": true}')
-          == (None, None))
-    check("门控口径: selftest 分组优先用子脚本明细",
-          _W25._count_group("selftest", [{"ok": True, "passed": 443,
-                                          "total": 443}]) == (443, 443))
-    check("门控口径: 子脚本没报明细时退回数条目",
-          _W25._count_group("selftest", [{"ok": True}]) == (1, 1))
-    check("门控口径: 红了也要如实显示明细",
-          _W25._count_group("selftest", [{"ok": False, "passed": 440,
-                                          "total": 443}]) == (440, 443))
-    check("门控口径: check 分组按条目数",
-          _W25._count_group("check", [{"ok": True}, {"ok": True},
-                                      {"ok": False}]) == (2, 3))
-
-    # check.py 必须真的把子脚本明细塞进自己的 results，否则上面全是空转
     _cs25 = _read_src25(os.path.join("..", "dev", "check.py"))
     check("check.py: 子进程结果带上了自报明细",
           'entry["passed"], entry["total"] = p2, t2' in _cs25)
-    check("check.py: 明细解析与 _wiki_common 共用一份实现",
-          "from _wiki_common import parse_summary_totals" in _cs25)
-
-    # ── 阶段② Wiki Maintainer：蒸馏摘要 ──
-    # 这一环此前**零覆盖**，而门控照样报全绿——19/19 说的是"被测到的都过了"，
-    # 不是"都测到了"。下面这批断言就是补这个洞。
-    import wiki_maintain as _WM25
-
-    def _mk_trace25(i, outcome="step_failed", stage="render", rc=1, title="t",
-                    ph="h1", env=None, secs=12.3, fb=None, tail="x" * 300):
-        return {
-            "id": "T%d" % i, "ts": "2026-08-31T10:%02d:00+08:00" % i,
-            "outcome": outcome, "skill_version": "1.5.44",
-            "env": env or {"py": "3.11", "node": "22", "ffmpeg": "6.0",
-                           "h264_encoder": "libx264"},
-            "params": {"title": title, "aspect": "landscape"},
-            "params_hash": ph, "project_key": "pk", "stages": [],
-            "skipped": [], "fallbacks": fb or [], "images": {},
-            "failure": {"stage": stage, "rc": rc, "stderr_tail": tail},
-            "outputs": {}, "total_seconds": secs,
-        }
-
-    _t0, _nf0, _ns0 = _WM25.build_brief([])
-    check("蒸馏: 空输入不崩且如实报 0 条",
-          _nf0 == 0 and _ns0 == 0 and "本次纳入轨迹" in _t0, (_nf0, _ns0))
-
-    _t1, _nf1, _ns1 = _WM25.build_brief([
-        _mk_trace25(1, stage="render"), _mk_trace25(2, stage="render"),
-        _mk_trace25(3, stage="tts", rc=2)])
-    check("蒸馏: 同 (outcome,stage,rc) 合并成一簇", _nf1 == 2, _nf1)
-    check("蒸馏: 簇标题带出现次数",
-          "[2 次] outcome=step_failed stage=render" in _t1)
-    # 3 条轨迹、2 个簇，尾巴全同：去重是**簇内**去重，所以应剩 2 条而不是 3 条
-    check("蒸馏: 簇内相同的 stderr 尾巴只出现一次", _t1.count("x" * 300) == 2,
-          _t1.count("x" * 300))
-
-    _t2, _nf2, _ns2 = _WM25.build_brief(
-        [_mk_trace25(i, outcome="ok", ph="h%d" % (i % 2)) for i in range(4)])
-    check("蒸馏: 成功按 params_hash 聚类", _ns2 == 2, _ns2)
-
-    # WikiSkill 的有界性：≤5 失败簇 + ≤3 成功簇，取了上限要如实说
-    _many25 = ([_mk_trace25(i, stage="s%d" % i) for i in range(9)]
-               + [_mk_trace25(20 + i, outcome="ok", ph="ok%d" % i)
-                  for i in range(7)])
-    _t3, _nf3, _ns3 = _WM25.build_brief(_many25)
-    check("蒸馏: 失败簇不超过 WikiSkill 上限",
-          _nf3 == _W25.BRIEF_MAX_FAILURES, (_nf3, _W25.BRIEF_MAX_FAILURES))
-    check("蒸馏: 成功簇不超过 WikiSkill 上限",
-          _ns3 == _W25.BRIEF_MAX_SUCCESSES, (_ns3, _W25.BRIEF_MAX_SUCCESSES))
-    check("蒸馏: 头部如实写下自己受哪些上限约束",
-          "失败簇 ≤%d" % _W25.BRIEF_MAX_FAILURES in _t3
-          and "成功簇 ≤%d" % _W25.BRIEF_MAX_SUCCESSES in _t3)
-
-    # 单条上限的**粒度**：必须是"每条"，不是"整篇截一刀"。
-    # 以前 _truncate 只在 return 前对全文调一次，单条能悄悄超限，而头部还
-    # 写着"单条 ≤15000 字符"——读者会信。
-    _huge25 = _mk_trace25(9, title="很长的标题" * 5000)
-    _huge25["failure"]["stderr_tail"] = "y" * 3000
-    _t4, _nf4, _ns4 = _WM25.build_brief([_huge25, _mk_trace25(10, outcome="ok")])
-    _blocks4 = [b for b in _t4.split("### [") if b.strip()]
-    _mx4 = max(len(b) for b in _blocks4) if _blocks4 else 0
-    check("蒸馏: 单条不超 BRIEF_ITEM_MAX_CHARS",
-          _mx4 <= _W25.BRIEF_ITEM_MAX_CHARS, (_mx4, _W25.BRIEF_ITEM_MAX_CHARS))
-    check("蒸馏: 超限的长字段被截断而不是撑爆条目", "…[已达单条" in _t4, _mx4)
-    check("蒸馏: 截断后条目的可操作结论还在（没被从尾部砍掉）", "待回答" in _t4)
-    check("蒸馏: 每条都过 _truncate（不是只对整篇截一刀）",
-          'lines.append(_truncate("\\n".join(item)))'
-          in _read_src25(os.path.join("..", "dev", "wiki_maintain.py")))
-
-    # 跨环境归因前必须先看到这条警告，否则会把换环境当成改代码改坏了
-    _t5, _nf5, _ns5 = _WM25.build_brief([
-        _mk_trace25(1, env={"py": "3.8", "node": "18"}),
-        _mk_trace25(2, env={"py": "3.11", "node": "22"})])
-    check("蒸馏: 跨环境时给出环境指纹警告", "环境指纹发生变化" in _t5)
-    _t5b, _nf5b, _ns5b = _WM25.build_brief([
-        _mk_trace25(1, env={"py": "3.8"}), _mk_trace25(2, env={"py": "3.8"})])
-    check("蒸馏: 同环境不误报环境变化", "环境指纹发生变化" not in _t5b)
-
-    check("蒸馏: 中位数取偶数样本的均值", _WM25._median([1, 3]) == 2.0)
-    check("蒸馏: 中位数取奇数样本的中位", _WM25._median([1, 2, 9]) == 2)
-    check("蒸馏: 中位数空样本返回 None", _WM25._median([]) is None)
-
-    # ── 阶段③④ 的 CLI 本体 ──
-    # 覆盖率扫描发现：本次改造新增的 4 个脚本里，只有 _wiki_common 的**校验
-    # 函数**被测过，CLI 入口一个都没有。而 gate 是整个自进化闭环的安全网——
-    # 它自己没测试，等于安全网从没被检查过（见 patterns/p11）。
-    import io as _io25
-    import contextlib as _ctx25
-    import wiki_gate as _G25
-    import wiki_propose as _P25
-    import wiki_trace as _T25
-
-    class _Ns25(object):
-        def __init__(self, **kw):
-            self.__dict__.update(kw)
-
-    def _quiet25(fn, *a, **kw):
-        """跑一个命令并吃掉它的输出——这些命令天生会打印给人看。
-
-        stdout 与 stderr **都要**接：这些 CLI 的错误与告警一律走 stderr，
-        只重定向 stdout 会把"回滚未生效"这类关键告警漏掉。
-        """
-        _b = _io25.StringIO()
-        with _ctx25.redirect_stdout(_b), _ctx25.redirect_stderr(_b):
-            _r = fn(*a, **kw)
-        return _r, _b.getvalue()
-
-    # ── 门控：回滚的三种结局必须分得清 ──
-    _rc_g1, _ = _quiet25(
-        _G25.cmd_rollback, _Ns25(proposal_id="no-such-snapshot-xyz"))
-    check("门控: 无快照的回滚被拒绝（不假装成功）",
-          _rc_g1 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g1)
-
-    with _tf25.TemporaryDirectory() as _td25:
-        _old_snap25, _old_logs25 = _W25.SNAPSHOTS_DIR, _W25.LOGS_MD
-        _W25.SNAPSHOTS_DIR = os.path.join(_td25, "snaps")
-        _snap25 = os.path.join(_W25.SNAPSHOTS_DIR, "empty-snap")
-        os.makedirs(_snap25)
-        _W25.write_json(os.path.join(_snap25, "manifest.json"),
-                        {"id": "empty-snap", "files": ["references/nope.md"]})
-        _log25 = os.path.join(_td25, "logs.md")
-        with open(_log25, "w", encoding="utf-8") as _f25:
-            _f25.write("# logs\n")
-        _W25.LOGS_MD = _log25
-        try:
-            _rc_g2, _out_g2 = _quiet25(
-                _G25.cmd_rollback, _Ns25(proposal_id="empty-snap"))
-            _logtxt25 = open(_log25, encoding="utf-8").read()
-        finally:
-            _W25.SNAPSHOTS_DIR, _W25.LOGS_MD = _old_snap25, _old_logs25
-    # 还原 0 个文件 = 安全网没兜住。报成功比不回滚更糟：人会以为回到原点了。
-    check("门控: 还原 0 个文件判为失败而不是成功",
-          _rc_g2 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g2)
-    check("门控: 还原 0 个时明说回滚未生效", "回滚未生效" in _out_g2, _out_g2[:60])
-    check("门控: 还原 0 个会写 rollback-failed 留痕",
-          "rollback-failed" in _logtxt25)
-
-    # 留痕失败不能推翻一次已经过闸的改动
-    with _tf25.TemporaryDirectory() as _td25:
-        _old_imp25 = _G25.IMPACT_MD
-        _nomark25 = os.path.join(_td25, "impact.md")
-        with open(_nomark25, "w", encoding="utf-8") as _f25:
-            _f25.write("# 缺 AUTO-ROWS-BELOW 标记\n")
-        try:
-            _G25.IMPACT_MD = _nomark25
-            _r_g3 = _G25._prepend_impact_row("| x |")
-            _G25.IMPACT_MD = os.path.join(_td25, "missing.md")
-            _r_g4 = _G25._prepend_impact_row("| x |")
-        finally:
-            _G25.IMPACT_MD = _old_imp25
-    check("门控: impact 缺标记/缺文件都只是跳过留痕，不崩",
-          _r_g3 is False and _r_g4 is False, (_r_g3, _r_g4))
-    check("门控: impact 行是 6 列表格行",
-          _G25._impact_row("2026-09-01", "1.5.44", "s", "p01", "19/19", "保留")
-          .count("|") == 7)
-
-    with _tf25.TemporaryDirectory() as _td25:
-        _pp25 = os.path.join(_td25, "p.json")
-        _W25.write_json(_pp25, {"id": "zz-test", "status": "rolled_back"})
-        _rc_g5, _ = _quiet25(_G25.cmd_apply, _Ns25(file=_pp25, gate=None))
-    check("门控: 已回滚/已应用的提案不允许再次应用",
-          _rc_g5 == _G25.EXIT_REFUSED_OR_ROLLED_BACK, _rc_g5)
-
-    # ── 提议者 CLI ──
-    _rc_p1, _out_p1 = _quiet25(
-        _P25.cmd_scaffold, _Ns25(from_pattern=["no-such-pattern"],
-                                 target=None, locator=None, risk="low",
-                                 gate="fast", out=None))
-    check("提议: 引用不存在的 pattern 时拒绝生成骨架", _rc_p1 == 1, _rc_p1)
-    check("提议: 拒绝时列出可选 pattern 而不是让人去翻目录",
-          "p01-python-version-fiction" in _out_p1)
-
-    with _tf25.TemporaryDirectory() as _td25:
-        _out_p2 = os.path.join(_td25, "scaffold.json")
-        _rc_p2, _ = _quiet25(
-            _P25.cmd_scaffold,
-            _Ns25(from_pattern=["s02-doc-drift-as-mechanical-gate"],
-                  target="SKILL.md", locator="第 1 行", risk="low",
-                  gate="fast", out=_out_p2))
-        # 落盘判定必须在 with 内做完——出了块临时目录就没了，isfile 恒为假
-        _scaffolded25 = os.path.isfile(_out_p2)
-        _sc25 = _W25.read_json(_out_p2)
-    # SKILL.md 里写的 `--scaffold ... -o out.json` 必须真的能用。p09 的教训：
-    # 我曾用只匹配长选项的 grep 判定 -o 不存在，据此改坏了一份正确的文档。
-    check("提议: -o 骨架落盘可用（SKILL.md 的示例不是空头支票）",
-          _rc_p2 == 0 and _scaffolded25)
-    check("提议: 骨架带上 pattern 上下文",
-          (_sc25.get("_pattern_context") or [{}])[0].get("id")
-          == "s02-doc-drift-as-mechanical-gate")
-    check("提议: 骨架的 TODO 占位过不了校验（提示还没写完）",
-          not _W25.validate_proposal(_sc25, _W25.SKILL_DIR)[0])
-
-    # 孵化 ↔ 复活：门控拒掉的案子不删，将来能复活
-    with _tf25.TemporaryDirectory() as _td25:
-        _oi25, _op25 = _P25.INCUBATING_DIR, _P25.PROPOSALS_DIR
-        _P25.INCUBATING_DIR = os.path.join(_td25, "incubating")
-        _P25.PROPOSALS_DIR = os.path.join(_td25, "proposals")
-        os.makedirs(_P25.PROPOSALS_DIR)
-        _rt25 = os.path.join(_P25.PROPOSALS_DIR, "x.json")
-        _W25.write_json(_rt25, {
-            "id": "rt-test", "created": "2026-09-01T00:00:00+08:00",
-            "status": "proposed",
-            "pattern_refs": ["s01-gate-injection-validation"],
-            "rationale": "r", "target": "SKILL.md", "locator": "l",
-            "old": "zzz-unique-token", "new": "yyy",
-            "expected_impact": "i", "risk": "low", "gate": "fast"})
-        try:
-            _rc_p3, _ = _quiet25(_P25.cmd_incubate,
-                                 _Ns25(file=_rt25, reason="方向对但时机不对"))
-            _inc25 = os.path.join(_P25.INCUBATING_DIR, "x.json")
-            check("提议: 被拒的案子转入孵化区而不是删掉",
-                  _rc_p3 == 0 and os.path.isfile(_inc25))
-            check("提议: 孵化时留下原因与状态",
-                  _W25.read_json(_inc25).get("status") == "incubating"
-                  and "时机不对" in _W25.read_json(_inc25).get(
-                      "incubate_reason", ""))
-            _rc_p4, _out_p4 = _quiet25(_P25.cmd_revive, _Ns25(file=_inc25))
-            check("提议: 孵化区的案子能复活回 proposals",
-                  os.path.isfile(_rt25))
-            check("提议: 复活后若校验不过会明说（目标文件可能已变）",
-                  _rc_p4 == 1 and "校验未通过" in _out_p4, _out_p4[:60])
-        finally:
-            _P25.INCUBATING_DIR, _P25.PROPOSALS_DIR = _oi25, _op25
-
-    # ── Raw Layer CLI ──
-    with _tf25.TemporaryDirectory() as _td25, \
-            _tf25.TemporaryDirectory() as _td25b:
-        _old_env25 = os.environ.get("CTV_TRACE_DIR")
-        _old_mk25 = _T25.MARKER
-        os.environ["CTV_TRACE_DIR"] = _td25
-        _T25.MARKER = os.path.join(_td25b, ".last_maintained")
-        try:
-            _rc_t1, _out_t1 = _quiet25(_T25.cmd_stats, _Ns25())
-            check("轨迹 CLI: 空目录的 stats 给提示而不是崩",
-                  _rc_t1 == 0 and "暂无轨迹" in _out_t1, _out_t1[:40])
-
-            # ts 显式钉死在过去：否则"标记前后的归属"取决于测试跑得够不够快
-            _okrec25 = _tr25.build_record(
-                "ok", params={"aspect": "landscape"}, total_seconds=9.0)
-            _okrec25["ts"] = "2020-01-01T00:00:00+08:00"
-            _tr25.write_record(_okrec25)
-            _failed25 = _tr25.build_record(
-                "step_failed", params={"aspect": "vertical"},
-                failure={"stage": "render", "rc": 1, "stderr_tail": "boom"},
-                total_seconds=3.0)
-            _failed25["ts"] = "2020-01-01T00:00:01+08:00"
-            _tr25.write_record(_failed25)
-
-            _rc_t2, _out_t2 = _quiet25(_T25.cmd_stats, _Ns25())
-            check("轨迹 CLI: stats 分得清成败结局",
-                  "step_failed" in _out_t2 and "render" in _out_t2)
-            _rc_t3, _out_t3 = _quiet25(
-                _T25.cmd_list, _Ns25(outcome="step_failed", limit=10,
-                                     since_last=False))
-            check("轨迹 CLI: list --outcome 只筛出匹配的",
-                  "共 1 条" in _out_t3, _out_t3[-24:])
-            _rc_t4, _out_t4 = _quiet25(
-                _T25.cmd_show, _Ns25(trace_id=_failed25["id"]))
-            check("轨迹 CLI: show 按 id 取回单条", '"boom"' in _out_t4)
-
-            # 导出 → 导入 往返：id 必须保住，否则等于丢了主键
-            _jl25 = os.path.join(_td25b, "traces.jsonl")
-            _rc_t5, _out_t5 = _quiet25(_T25.cmd_export, _Ns25(out=_jl25))
-            check("轨迹 CLI: export 导出条数如实", "已导出 2 条" in _out_t5,
-                  _out_t5[:40])
-            os.environ["CTV_TRACE_DIR"] = _td25b + "_roundtrip"
-            _rc_t6, _out_t6 = _quiet25(_T25.cmd_import,
-                                       _Ns25(from_file=_jl25))
-            check("轨迹 CLI: import 导入条数如实", "已导入 2 条" in _out_t6,
-                  _out_t6[:40])
-            _ids25 = [r.get("id") for _p, r in _tr25.iter_traces()]
-            check("轨迹 CLI: 导出再导入后 id 不丢（往返无损）",
-                  _failed25["id"] in _ids25, _ids25)
-
-            # mark-maintained + --since-last：蒸馏的进度标记
-            os.environ["CTV_TRACE_DIR"] = _td25
-            _rc_t7, _ = _quiet25(_T25.cmd_mark, _Ns25())
-            check("轨迹 CLI: mark-maintained 落下标记文件",
-                  _rc_t7 == 0 and os.path.isfile(_T25.MARKER))
-            _rc_t8, _out_t8 = _quiet25(
-                _T25.cmd_list, _Ns25(outcome=None, limit=None,
-                                     since_last=True))
-            # 0 条时 cmd_list 走的是"没有匹配的轨迹"这条分支，不打"共 0 条"
-            check("轨迹 CLI: --since-last 过滤掉标记之前的轨迹",
-                  "没有匹配的轨迹" in _out_t8, _out_t8[-30:])
-            _rc_t9, _out_t9 = _quiet25(
-                _T25.cmd_prune, _Ns25(max=0, older_than_days=180,
-                                      dry_run=True))
-            check("轨迹 CLI: prune --max 0 表示不限制（dry-run 也不删）",
-                  "将删除 0 条" in _out_t9, _out_t9[:40])
-        finally:
-            if _old_env25 is None:
-                os.environ.pop("CTV_TRACE_DIR", None)
-            else:
-                os.environ["CTV_TRACE_DIR"] = _old_env25
-            _T25.MARKER = _old_mk25
-
-    # ── 分界时间的时区处理 ──
-    # 轨迹的 ts 是 `astimezone().isoformat()`（**带时区**），而标记的 mtime 用
-    # `fromtimestamp()` 取出来是**朴素**时间，两者一比就抛 TypeError。这段逻辑
-    # 原先在两个 CLI 里各写一遍：wiki_trace 直接崩，wiki_maintain 被
-    # `except (ValueError, TypeError)` 吞掉，于是 `--since-last` **静默退化成
-    # 不过滤**——比崩溃更难发现。现在统一走 _wiki_common（见 patterns/p12）。
-    _ts_a25 = _W25.parse_trace_ts("2026-08-31T10:00:00+08:00")
-    check("分界: 带时区的 ts 解析后仍是 aware",
-          _ts_a25 is not None and _ts_a25.tzinfo is not None, _ts_a25)
-    _ts_n25 = _W25.parse_trace_ts("2026-08-31T10:00:00")
-    check("分界: 朴素的 ts 会被补上时区（否则没法跟标记比）",
-          _ts_n25 is not None and _ts_n25.tzinfo is not None, _ts_n25)
-    check("分界: 解析不了的时间返回 None 而不是抛",
-          _W25.parse_trace_ts("not-a-time") is None
-          and _W25.parse_trace_ts(None) is None)
-    check("分界: 标记不存在时返回 None（不做过滤）",
-          _W25.marker_cutoff("/nonexistent/.last_maintained") is None)
-
-    with _tf25.TemporaryDirectory() as _td25:
-        _mkf25 = os.path.join(_td25, ".last_maintained")
-        with open(_mkf25, "w", encoding="utf-8") as _f25:
-            _f25.write("{}")
-        _cut25 = _W25.marker_cutoff(_mkf25)
-        check("分界: 标记 mtime 取出来是 aware",
-              _cut25 is not None and _cut25.tzinfo is not None, _cut25)
-        try:
-            _cmp25 = (_W25.parse_trace_ts("2026-08-31T10:00:00+08:00")
-                      < _cut25)
-        except TypeError as _e25:
-            _cmp25 = "TypeError: %s" % _e25
-        check("分界: 带时区的 ts 与标记 mtime 可比（不抛 TypeError）",
-              isinstance(_cmp25, bool), _cmp25)
-
-    # 行为回归：光"不崩"不够，必须真的过滤——静默不过滤正是原来的失败形态
-    with _tf25.TemporaryDirectory() as _td25, \
-            _tf25.TemporaryDirectory() as _td25b:
-        _oe25 = os.environ.get("CTV_TRACE_DIR")
-        _otr25, _omk25 = _T25.MARKER, _WM25.MARKER
-        os.environ["CTV_TRACE_DIR"] = _td25
-        _T25.MARKER = _WM25.MARKER = os.path.join(_td25b, ".last_maintained")
-        try:
-            _oldrec25 = _tr25.build_record("ok", params={"a": 1})
-            _oldrec25["ts"] = "2020-01-01T00:00:00+08:00"
-            _tr25.write_record(_oldrec25)
-            _quiet25(_T25.cmd_mark, _Ns25())          # 打标记
-            _newrec25 = _tr25.build_record("ok", params={"a": 2})
-            _tr25.write_record(_newrec25)             # 标记之后才发生
-
-            _kept25 = _WM25._collect(True)
-            check("分界: --since-last 只留下标记之后的轨迹",
-                  len(_kept25) == 1
-                  and _kept25[0].get("id") == _newrec25["id"],
-                  [r.get("id") for r in _kept25])
-            check("分界: 不带 --since-last 时全部纳入",
-                  len(_WM25._collect(False)) == 2)
-            _rc_l25, _out_l25 = _quiet25(
-                _T25.cmd_list, _Ns25(outcome=None, limit=None,
-                                     since_last=True))
-            check("分界: wiki_trace --since-last 不再因时区崩",
-                  _rc_l25 == 0 and "共 1 条" in _out_l25, _out_l25[-24:])
-        finally:
-            if _oe25 is None:
-                os.environ.pop("CTV_TRACE_DIR", None)
-            else:
-                os.environ["CTV_TRACE_DIR"] = _oe25
-            _T25.MARKER, _WM25.MARKER = _otr25, _omk25
+    check("check.py: 摘要解析内联实现（取最后一行 __SUMMARY_JSON__）",
+          'SUMMARY_PREFIX = "__SUMMARY_JSON__"' in _cs25
+          and "def parse_summary_totals(" in _cs25)
 
     # ── 收尾：覆盖率扫描剩下的两个既有模块也补上 ──
     # 它俩都在本次改造之前就存在，但"零覆盖"这条结论同样成立。扫描报出来是
     # 线索，既然扫到了就没理由绕过去（见 patterns/p11）。
     import urllib.request as _urlreq25
+    # run_eval/_assets 在 dev/，补一条路径（wiki 段删除后这里只剩 scripts/）
+    _DEV_DIR25 = os.path.abspath(os.path.join(HERE, "..", "dev"))
+    if _DEV_DIR25 not in sys.path:
+        sys.path.insert(0, _DEV_DIR25)
     import run_eval as _RE25
     import _assets as _AS25
 
@@ -2972,6 +2304,15 @@ def main():
     check("run_eval: 区间可自定义",
           _RE25.check_segment_count({"segments": [{}] * 3},
                                     expect_range=(3, 3)) == (True, 3))
+
+    import tempfile as _tf25
+    # 静音包装：run_eval 的 check/skip 会直接 print，测试里不想刷屏
+    import contextlib as _cl25
+    import io as _io25
+
+    def _quiet25(fn, *a, **k):
+        with _cl25.redirect_stdout(_io25.StringIO()):
+            return fn(*a, **k)
 
     # check/skip 写的是模块级 RESULTS/SKIPPED，测完必须还原
     _ores25, _oskip25 = _RE25.RESULTS, _RE25.SKIPPED
@@ -2989,11 +2330,24 @@ def main():
 
     # pick_h264_encoder：用假 ffmpeg 替身，免得依赖本机装了哪些编码器
     def _fake_ffmpeg25(body, tmpdir):
-        """造一个只打印编码器清单的假 ffmpeg（该函数只解析 stdout）。"""
-        p = os.path.join(tmpdir, "fake_ffmpeg.sh")
+        """造一个只打印编码器清单的假 ffmpeg（该函数只解析 stdout）。
+
+        Windows 的 CreateProcess 无法直接执行 .sh，替身按平台出
+        .bat（多行清单拆成多条 echo）——否则枚举永远走"拿不到清单"
+        分支，这两条断言就成了永久红。
+        """
+        if os.name == "nt":
+            p = os.path.join(tmpdir, "fake_ffmpeg.bat")
+            _lines = ["@echo off"] + ["echo " + ln.strip(" ")
+                                       for ln in body.split("\n")]
+            _content = "\r\n".join(_lines) + "\r\n"
+        else:
+            p = os.path.join(tmpdir, "fake_ffmpeg.sh")
+            _content = "#!/bin/sh\necho '%s'\n" % body
         with open(p, "w", encoding="utf-8") as _f25:
-            _f25.write("#!/bin/sh\necho '%s'\n" % body)
-        os.chmod(p, 0o755)
+            _f25.write(_content)
+        if os.name != "nt":
+            os.chmod(p, 0o755)
         return p
 
     with _tf25.TemporaryDirectory() as _td25:

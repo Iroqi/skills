@@ -28,7 +28,6 @@ segments_source.json
 
 补充产出物（可选，不参与上面这条主链路）：`export_extras.py` 读 `timing_manifest.json` → `chapters.txt` + `captions.srt`。
 
-旁路记录（不产生任何产出物）：每次真实跑批会在用户配置目录 `~/.config/ai-video/traces/` 追加一条运行记录（outcome / 失败阶段 / 是否触发兜底 / 参数哈希 / 环境指纹），不含绝对路径与密钥，也不被任何产出物读取；`--dry-run`、`--no-trace` 或 `CTV_TRACE=0` 时不写，目录可用 `CTV_TRACE_DIR` 覆盖。
 
 ### 路径解析速记
 

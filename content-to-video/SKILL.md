@@ -1,7 +1,7 @@
 ---
 name: content-to-video
 description: 把任意信息源（粘贴的文本/笔记、上传的文档、网页链接、结构化资讯 API）自动转成带字幕、配图和动效的解说视频——当前对话模型提炼要点写稿，逐句 TTS 配音，Hyperframes 渲染成片。适用于"把这份 PDF/文章/会议纪要/读书笔记做成讲解视频"、"做一期资讯播报"、"日报视频"、"把讲义做成系列短视频"等需求。触发词包括"把……做成视频"、"视频讲解/播报"、"资讯视频"、"帮我出个视频版"等；只要意图是输入一批文字/资料、输出一条配音字幕视频，就应使用本技能。
-version: "1.5.47"
+version: "1.5.51"
 ---
 
 # 信源转视频（Content-to-Video）
@@ -20,7 +20,6 @@ version: "1.5.47"
 - [一键编排（可选）](#一键编排可选)
 - [输出契约](#输出契约)
 - [不适用场景](#不适用场景)
-- [自进化闭环（维护向）](#自进化闭环维护向)
 - [附录：参考文档索引](#附录参考文档索引)
 
 ## 项目结构
@@ -45,7 +44,6 @@ content-to-video/
 │   ├── render_watch.py                  渲染命令解析辅助（run.py 内部用）
 │   ├── budget.py                        可选：时长预算（plan/estimate）
 │   ├── export_extras.py                 可选：导出章节时间戳 + SRT 字幕
-│   ├── visual_regression.py             可选：跨版本渲染关键帧像素回归（维护向 QA，制作流程不依赖）
 │   ├── split_series.py                  可选：长文档 → 多集 segments 骨架
 │   ├── gen_cover.py                     可选：竖版封面 + 候选标题草稿
 │   ├── check_series.py                  可选：系列跨集参数一致性检查
@@ -65,23 +63,11 @@ content-to-video/
 │   ├── sources.md                       信源（aihot/文档/网页/笔记）接入方式
 │   └── content_templates.md             更多内容类型举例（评测/周报/播客/书评/财报）
 └── dev/                                维护/迭代本技能用，不参与任何一次制作
-│   ├── check.py                         一键 gate（selftest+run_eval+JSON/frontmatter+wiki 契约）
+│   ├── check.py                         一键 gate（selftest+run_eval+JSON/frontmatter/doc_drift）
 │   ├── run_eval.py                      离线集成测试（静音+ffmpeg 代替，秒级跑完）
 │   ├── evals.json                       10 条 agent 行为评估用例（另一 agent 作 grader）
-│   ├── changelog.json                   版本变更记录（最近 20 条完整）
+│   ├── changelog.json                   版本变更记录（最近 5 条完整）
 │   ├── changelog-archive.md             更早版本的压缩归档（版本/日期/一句话摘要）
-│   ├── wiki_trace.py                    Raw Layer：执行轨迹的查看/统计/剪枝
-│   ├── wiki_maintain.py                 自进化②：轨迹蒸馏摘要 + pattern 契约校验
-│   ├── wiki_propose.py                  自进化③：生成/校验单原子改动提案（默认不改 SKILL.md）
-│   ├── wiki_gate.py                     自进化④：应用提案 → 门控 → 失败回滚
-│   ├── _wiki_common.py                  上面四个脚本的共用契约（内部模块）
-│   └── wiki/                            自进化闭环的 Wiki Layer（维护向，执行态禁止读取）
-│       ├── README.md                    三层契约与操作流程
-│       ├── PURPOSE.md                   技能目标与不可破的不变量
-│       ├── patterns/                    蒸馏出的经验（一类一文件）
-│       ├── logs.md                      维护流水（只追加）
-│       ├── skill-impact.md              每次改动 → 门控结果对照
-│       └── proposals/                   待应用的原子改动提案（含 incubating/ 孵化区）
 ```
 
 ## 环境准备
@@ -385,7 +371,7 @@ python scripts/gen_hyperframes.py \
 
 完全无外网的环境可以用 `--gsap-src vendor/gsap.min.js` 显式指定本地路径（需要自己提前把 `gsap.min.js` 放到 HTML 输出目录的 `vendor/` 下）。
 
-**横屏布局策略（`--aspect landscape`，默认）**：横屏是左右分区排布——标题在上、配图靠右（默认 860×700 横版框，上缘在标题带之下、下缘避开底部字幕条——单行标题完整避开图片，两行标题第二行伸入图片区时生成期告警）、左列是正文要点卡片 + 底部字幕条（bar，横屏默认模式）；传 `--sub-mode verse` 可把正文卡位置换成歌词式句子流滚动窗口（见下方「字幕/内容呈现模式」）。横屏配图是**按需选择**而非全覆盖——按第 4 步路由表判断每个段落适合什么配图方式，不强制每段都配图。但“按需”的前提是**内容性质不需要图**（过渡段、纯承接段可以留空）：搜图无结果/候选不合适**不算**按需留空，应按第 4 步转 ImageGen 生图或方式 C 图表补图——分步执行时 `gen_hyperframes.py` 会对没有配图映射的内容段落打 `[warn]` 提醒（`run.py` 一键编排则是缺图直接拦截停下），不要把这行 warn 当噪音忽略。章节模式（默认）段间用 accent 色 wipe 扫场 + 左侧编号圆 badge；flow 叙事模式关 badge、用更长 cross-fade。
+**横屏布局策略（`--aspect landscape`，默认）**：横屏是左右分区排布——标题在上、配图靠右（默认 860×700 横版框，上缘在标题带之下、下缘避开底部字幕条——单行标题完整避开图片，两行标题第二行伸入图片区时生成期告警）、左列是正文要点卡片 + 底部字幕条（bar，横屏唯一模式）。横屏配图是**按需选择**而非全覆盖——按第 4 步路由表判断每个段落适合什么配图方式，不强制每段都配图。但“按需”的前提是**内容性质不需要图**（过渡段、纯承接段可以留空）：搜图无结果/候选不合适**不算**按需留空，应按第 4 步转 ImageGen 生图或方式 C 图表补图——分步执行时 `gen_hyperframes.py` 会对没有配图映射的内容段落打 `[warn]` 提醒（`run.py` 一键编排则是缺图直接拦截停下），不要把这行 warn 当噪音忽略。章节模式（默认）段间用 accent 色 wipe 扫场 + 左侧编号圆 badge；flow 叙事模式关 badge、用更长 cross-fade。
 
 **竖屏短视频（`--aspect vertical`）**：默认输出 1920×1080 横屏（`landscape`）。传 `--aspect vertical` 会自动切到 1080×1920 竖屏（抖音/视频号/小红书常见格式），标题位置、图片尺寸、句子流钉底方式等布局会整体按竖屏重新适配，不需要额外传 `--width`/`--height`。
 
@@ -395,11 +381,11 @@ python scripts/gen_hyperframes.py \
 
 **一次性生成横竖屏两个版本（`--aspect both`）**：需要同时发布横屏（B站）和竖屏（抖音/小红书）平台时，不用把命令跑两遍——`--aspect both` 会一次性输出两套文件：HTML 层面 `-o` 指定的路径本身是横屏版，竖屏版文件名在此基础上自动插入 `.vertical` 后缀（如 `index.html` + `index.vertical.html`）；走 `run.py` 一键编排时会分别渲染两个成片——`out.mp4`（横屏）与 `out.vertical.mp4`（竖屏），并逐个用 `verify_render.py` 校验。
 
-**字幕/内容呈现模式（`--sub-mode`，默认按画幅取：横屏 `bar`、竖屏家族 `verse`）**：同一份口播稿/配图/cue 数据，两种画面呈现。横屏两种模式可选；竖屏家族（vertical/portrait）**只有 verse**——显式传 `bar` 直接报错（竖屏高度被大标题+图片占满，bar 的"底部字幕条+正文要点卡"放不下），想要 bar 形态请用横屏。显式传 `verse`/`bar` 则强制该模式（`--aspect both` 不传时两画幅各自按默认走：横屏 bar + 竖屏 verse）：
-- `verse` = **歌词式句子流**：段落全部句子静态渲染，当前句高亮加粗、已播句淡出，窗口随播报平滑滚动；有图段的正文要点卡片隐藏（正文信息由句子流逐句完整呈现），无图段保留要点卡片兜底；说话人不显示（cue 数据层保留 speaker/spk 字段，导出 SRT 仍带 `[说话人]` 前缀）。横屏沿用 bar 的布局框架（badge/标题/tagline/图片同位），把正文卡的位置换成固定高 300px 滚动窗口（有图段钉左列 870 宽、随标题浮动，无图段 870 居中；开场/收尾保留目录/回顾，句子流钉左列底部）；竖屏钉在内容区底部。
-- `bar` = **经典形式**（仅横屏）：底部字幕条（当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示；双人对话在字幕条上方显示说话人标签（颜色按字幕条背景亮度自适应深/浅配色）。
+**字幕/内容呈现模式（按画幅绑定，没有 `--sub-mode` 选项）**：同一份口播稿/配图/cue 数据，两种画面呈现。**横屏固定 `bar`、竖屏（portrait）固定 `verse`**，不可选：
+- `verse` = **歌词式句子流**（竖屏唯一形态）：段落全部句子静态渲染，当前句高亮加粗、已播句淡出，窗口随播报平滑滚动；有图段的正文要点卡片隐藏（正文信息由句子流逐句完整呈现），无图段保留要点卡片兜底；说话人不显示（cue 数据层保留 speaker/spk 字段，导出 SRT 仍带 `[说话人]` 前缀）。窗口钉在内容区底部（高与内边距读模板 `verse` 块）。
+- `bar` = **经典形式**（横屏唯一形态）：底部字幕条（当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示（正文字号 38 小于字幕 46，口播字幕是画面主导文字）；双人对话在字幕条上方显示说话人标签（颜色按字幕条背景亮度自适应深/浅配色）。
 
-怎么选：默认值已按平台习惯分流（横屏图文讲解配 bar、竖屏短视频配 verse）；横屏想要"信息随口播逐句展开、画面聚焦"再显式传 verse。竖屏没有第二个选项——想要 bar 的"完整要点清单常驻 + 说话人身份可见"（教学步骤、操作指南、双人对话）就选横屏出片。系列视频从第一集选定后各集沿用同一模式（`check_series.py` 会拦跨集 drift）。
+怎么选：模式与画幅绑定、不需要选——想要 bar 的"完整要点清单常驻 + 说话人身份可见"（教学步骤、操作指南、双人对话）就用横屏出片；竖屏沉浸式 feed 内容选 portrait。
 
 **主题配色（`--theme`）**：默认 `cream`（米白色科技风：暖米白背景 + 冷蓝灰网格线 + 石墨黑文字）。当前可选 `cream` / `dark` / `tech` / `alert`（`config/theme_registry.json` 是唯一权威来源，加新主题只改这一处，CLI 的 `--theme` choices 会自动同步，不会出现"改了注册表、命令行还报不认识这个选项"的漂移）。只影响背景渐变/网格线/正文文字/body 背景色/句子流文字色，不影响每段的 accent 强调色。
 
@@ -423,7 +409,7 @@ python scripts/export_extras.py -m audio_output/timing_manifest.json -o hf-proje
 
 产出 `hf-project/chapters.txt`（B 站/YouTube 简介常用的章节时间戳格式，`00:00 开场` / `00:32 反向传播算法` ……，直接来自 `segments[]` 的分段信息，manifest 没有 `segments` 字段时会跳过并提示）和 `hf-project/captions.srt`（标准 SRT 字幕，每句一条 cue，双人对话段落的句子会带 `[说话人]` 前缀）。用 `--only chapters` 或 `--only srt` 只导出其中一个。
 
-> **竖屏/verse 项目必须显式传 `--aspect`**（`--aspect vertical|portrait`，`--sub-mode` 按画幅自动取、一般不用管）。SRT 的切行参数与片内字幕共用同一份来源，但不传 `--aspect` 时会按横屏的 28 字/行切，而竖屏画面每行只放得下 22 字——导出的字幕跟片里看到的不是同一套切法。横屏是默认值，不用传。
+> **竖屏项目必须显式传 `--aspect`**（`--aspect portrait`）。SRT 的切行参数与片内字幕共用同一份来源，但不传 `--aspect` 时会按横屏的 28 字/行切，而竖屏画面每行只放得下 22 字——导出的字幕跟片里看到的不是同一套切法。横屏是默认值，不用传。
 
 同类的附加产出还有封面：`python scripts/gen_cover.py -s segments_source.json -o hf-project --theme dark` 从稿件直接生成竖版封面 `cover.png`（1080×1920，主题色渐变 + 首段要点文字）和 3 个候选标题草稿 `titles.json`——它只负责省去"从空白图做起"的起手式，候选标题是**草稿**，由 agent/人工终审润色后才可用。
 
@@ -455,7 +441,6 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 | `--refresh-images` | 配图不复用，全部重新搜索/下载 | 换了一批候选想重搜；默认 `--resume` 会跳过已有成品图的段落 |
 | `--no-resume` | TTS 不复用已生成的音频 | 改了音色/语速要整稿重录（默认复用会让改音色不生效） |
 | `--loudness -16` | 对最终音频做响度归一化（LUFS，透传 `pipeline.py`） | 投递平台有响度要求时；默认不做归一化。开启后成片音频为 `combined_loud.wav` |
-| `--no-trace` | 本次不落执行轨迹 | 见下方「自进化闭环」。轨迹默认写在用户目录、不进项目目录，也不影响成片 |
 
 > **注意 `--workers` 有三个同名参数，默认值不同，别串了**：`run.py` 的是**渲染抓帧** worker（默认 6）；`search_images.py` 的是**并行搜图/下载**线程（默认 4）；`pipeline.py` 的是**并行 TTS 调用**数（默认 4）。三个同名不同义，写命令时看清传的是哪个脚本。
 
@@ -497,61 +482,6 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 - 需要高度定制化视觉特效（粒子、3D 场景等）的视频
 - **纯英文视频**：预置的 `Mia`/`Chloe`/`Milo`/`Dean` 等英文音色仅用于中文稿件中偶尔出现的英文术语（如产品名）朗读，断句规则（中文标点）也是针对中文稿件设计的。若整篇稿件是纯英文或以非中文语言为主，断句会失效，此技能不适用
 - 实时/流式视频生成
-
-## 自进化闭环（维护向）
-
-> **本节只在"改进本技能"时读，做视频时不需要、也不应该读。**
-
-本技能带一套自进化闭环（做法来自 WikiSkill，arXiv 2608.27454）：每次制作留下
-一条不可变轨迹 → 维护期把轨迹蒸馏成经验 → 每次只提一处原子改动 → 门控不通过
-就回滚。**skill 层会回滚，经验层不会。**
-
-| 层 | 落点 | 回滚 |
-|---|---|---|
-| Raw（轨迹） | `~/.config/ai-video/traces/`（可用 `CTV_TRACE_DIR` 改） | 只追加，可剪枝 |
-| Wiki（经验） | `dev/wiki/` | **永不回滚** |
-| Skill（可执行） | `SKILL.md`、`references/`、`config/`、`scripts/` | 门控红即回滚 |
-
-每次 `run.py` 实跑结束会旁路写一条轨迹（环境指纹、参数、各阶段耗时、是否触发
-兜底、失败环节）。轨迹**不写进项目目录、也不写进技能目录**——它是维护期的观测
-数据，混进产物会污染项目；想完全关掉用 `--no-trace` 或 `CTV_TRACE=0`。轨迹里
-不含绝对路径、稿件正文与任何密钥（去敏在 `scripts/_trace.py` 里机械保证）。
-
-### ⚠️ 执行态禁止读取 dev/wiki/
-
-论文的消融实验给了一个反直觉结论：把 wiki 塞给执行态的 agent，得分从 68.1%
-**跌到 60.9%**。wiki 是**离线优化侧的资产，不是运行时提示词**。
-
-所以：**执行本技能做视频时不要读 `dev/wiki/` 下的任何文件**。想让某条历史教训
-影响执行行为，正确做法是把它蒸馏成 `SKILL.md` / `references/` 里的一条具体
-规则，而不是把整个经验库挂进上下文。这条约束由 `dev/check.py` 的
-`执行层纯度` 检查机械把关。
-
-### 一次迭代
-
-```bash
-python dev/wiki_trace.py stats                      # 看轨迹统计
-python dev/wiki_maintain.py --brief --since-last    # 蒸馏摘要（≤5 失败+≤3 成功）
-#   → 照摘要写/改 dev/wiki/patterns/*.md
-python dev/wiki_maintain.py --commit                # 校验 pattern 契约
-# -o 落盘；不给 -o 则打到 stdout。--from 可重复，--target 预填目标文件
-python dev/wiki_propose.py --scaffold --from <pattern-id> \
-       --target <目标文件> --risk low -o dev/wiki/proposals/x.json
-#   → 填完 rationale/old/new/expected_impact 后
-python dev/wiki_propose.py --validate dev/wiki/proposals/x.json
-python dev/wiki_gate.py --apply dev/wiki/proposals/x.json    # 门控不过自动回滚
-```
-
-`wiki_gate.py` 会**先跑基线门控再应用**：如果应用前就已经是红的，它会拒绝应用
-并说明"红的不是这份提案造成的"。回滚用文件级快照（`.snapshots/`），**不用
-`git checkout --`**——后者会把你没提交的在制品一起抹掉。
-
-被门控拒掉的提案不删，进 `proposals/incubating/`，后来的经验若指向它可以
-`--revive` 复活。
-
-> 别拿这套机制对标论文里的 +18.6 分：那个数字来自"有标准答案、机器可判分"的
-> 基准任务，本技能没有这类标量指标。这里能拿到的是**每处改动都有证据、有门控、
-> 有回滚、经验不随回滚蒸发**——机制可以复刻，涨幅不能。
 
 ## 附录：参考文档索引
 

@@ -268,17 +268,24 @@ def split_subtitle_lines(text, max_chars=28, max_lines=3, slack=1.5, hard_cap=40
     lines = _wrap_width(text, width, hard_cap)
     return [l for l in lines if l]
 
-def subtitle_params_for(aspect="landscape", sub_mode="bar"):
-    """按画幅/字幕模式给出字幕切分参数——单一权威来源。
+def subtitle_params_for(aspect="landscape"):
+    """按画幅给出字幕切分参数——单一权威来源。
 
     gen_hyperframes.py（片内字幕）与 export_extras.py（SRT）必须共用这份
-    参数：两边各写一份数值时，竖屏/verse 下会切出不同的行，导致"导出的
+    参数：两边各写一份数值时，竖屏下会切出不同的行，导致"导出的
     SRT 与视频里看到的字幕不是同一套"——export_extras 的 docstring 承诺
     逐条对齐，参数漂移会让这个承诺悄悄失效。
+
+    字幕/内容呈现模式固定按画幅绑定：横屏 bar、竖屏 verse（无用户
+    选项），因此本函数只按 aspect 区分。
 
     Returns:
         dict(max_chars=, slack=, hard_cap=, cue_max_lines=)
     """
+    # portrait 归一化：竖屏 3:4 复用 vertical 家族标识（与 gen_hyperframes
+    # 的归一化语义一致），CLI/调用方传 "portrait" 也拿到竖屏切行参数。
+    if aspect == "portrait":
+        aspect = "vertical"
     # 竖屏画面窄（1080 宽），每行只能放 ~22 字；横屏字幕条 maxWidth 900、
     # 字号 ≈22 字时 870px/46px ≈28 字。
     max_chars = 22 if aspect == "vertical" else 28
@@ -286,10 +293,10 @@ def subtitle_params_for(aspect="landscape", sub_mode="bar"):
     # 物理行硬上限：次要标点切不动时按此字符级硬切，保证 1 逻辑行 = 1
     # 物理行，不二次换行（横屏 ~34 字/行、竖屏 ~22 字/行）。
     hard_cap = 22 if aspect == "vertical" else 34
-    # bar 模式每 cue ≤2 行（再多会盖住正文卡）；verse 竖屏按整句渲染——
-    # 内容是字幕本身，切行只影响 cue 数据不影响视觉。
-    cue_max_lines = ((99 if aspect == "vertical" else 2)
-                     if sub_mode == "verse" else 2)
+    # bar（横屏唯一模式）每 cue ≤2 行（再多会盖住正文卡）；verse（竖屏
+    # 唯一模式）按整句渲染——内容是字幕本身，切行只影响 cue 数据不影响
+    # 视觉。
+    cue_max_lines = 99 if aspect == "vertical" else 2
     return {"max_chars": max_chars, "slack": slack,
             "hard_cap": hard_cap, "cue_max_lines": cue_max_lines}
 

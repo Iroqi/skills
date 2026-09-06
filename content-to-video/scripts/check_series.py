@@ -14,7 +14,7 @@
 检查项：
   - segments_source.json: opening_title（系列名应恒定）、flow 叙事模式
   - production_report.json 的 params: theme / voice_id / speed / aspect /
-    sub_mode / fps / quality（run.py 写入；旧格式报告缺 params 时跳过并提示）
+    fps / quality（run.py 写入；旧格式报告缺 params 时跳过并提示）
 
 只发现一个集时无可对比，直接通过。发现 drift 退出码 1。
 """
@@ -134,7 +134,9 @@ def find_drifts(episodes):
     _cmp_required("opening_title",
                   lambda e: e["opening_title"] if "opening_title" in e else _ABSENT)
     _cmp("flow", lambda e: e.get("flow"))
-    for f in ("theme", "voice_id", "speed", "aspect", "sub_mode", "fps", "quality"):
+    # sub_mode 不再对比：模式已固定按画幅绑定（横屏 bar、竖屏 verse），
+    # aspect 一致则模式必然一致；旧报告里的 sub_mode 字段忽略。
+    for f in ("theme", "voice_id", "speed", "aspect", "fps", "quality"):
         # None 表示用默认值（run.py 未显式传），跳过不比
         _cmp(f"params.{f}", lambda e, _f=f: (e.get("params") or {}).get(_f))
     return drifts

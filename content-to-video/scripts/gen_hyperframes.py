@@ -169,8 +169,7 @@ AGENDA_NUM_TEXT_COLOR = "#0a0e14"
 def generate_html(manifest, audio_src, images=None,
                   width=1920, height=1080,
                   gsap_src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js",
-                  aspect="landscape", theme="cream", fps=24, sub_mode=None,
-                  v_compact=False):
+                  aspect="landscape", theme="cream", fps=24):
     """Generate complete Hyperframes HTML composition string.
 
     Args:
@@ -188,29 +187,19 @@ def generate_html(manifest, audio_src, images=None,
         gsap_src: GSAP script URL or local path. Defaults to the jsdelivr CDN;
             pass a relative path (e.g. "vendor/gsap.min.js") for offline /
             air-gapped rendering environments where CDN access is unavailable.
-        aspect: 画幅比例 ("landscape" 横屏 16:9 / "vertical" 竖屏 9:16)，
-            vertical 时自动调整标题/图片/badge/字幕等布局为竖屏适配。
+        aspect: 画幅比例（只有两种）："landscape" 横屏 16:9（1920x1080）/
+            "portrait" 竖屏 3:4（1080x1440，紧凑留白 + 图片槽 4:3）。
+            portrait 复用竖屏布局家族（内部 data-aspect 写 "vertical"，
+            全部竖屏 CSS 规则照常命中）。
         theme: 主题配色（可选值以 config/theme_registry.json 为唯一权威来源，
             当前 cream/dark/tech/alert），影响背景渐变、
             网格、正文文字与 body 背景色，不影响每段 accent 彩色。
         fps: 输出帧率提示（写入 data-fps，渲染命令可用 --fps 覆盖；
             默认 24 比 30 少抓 20% 帧、渲染更快）。
-        sub_mode: 字幕/内容呈现模式，None（默认）时按画幅解析：
-            横屏 bar（经典底部字幕条 + 正文卡，图文讲解的常见形态）、
-            竖屏家族 verse（歌词式句子流，短视频常见形态）。竖屏家族
-            （vertical/portrait）只有 verse——bar 的"字幕条 + 正文卡
-            常驻"在竖屏高度内放不下，显式传 bar 会 raise ValueError。
-            横屏两模式可用：verse = bar 布局框架（badge/标题/tagline/
-            图片同位）+ 正文卡位置换成固定高 300px 的滚动句子流窗口
-            （当前句高亮、已播句淡出、随播报滚动），开场/收尾保留
-            agenda、verse 钉在左列底部；bar = 底部字幕条 + 正文要点
-            卡片（含说话人标签显示层）。
-        v_compact: 竖屏紧凑画布（--aspect portrait，3:4 即 1080x1440）。
-            portrait 复用 vertical 的布局家族（data-aspect 仍写
-            "vertical"，全部竖屏 CSS 规则照常命中），此标记只切换紧凑
-            参数：上下留白收窄（220/190→100/80）、图片槽统一
-            4:3——1:1 方图（980x980）加 300px 句子流在 1440 高度里
-            放不下，4:3 槽（980x735）才能给标题留出完整空间。
+
+        字幕/内容呈现模式不作为参数暴露——固定按画幅绑定：横屏 bar
+        （经典底部字幕条 + 正文要点卡片，图文讲解的常见形态）、竖屏
+        verse（歌词式句子流，短视频常见形态）。
     """
     total_dur = manifest["total_duration"]
     sentences = manifest["sentences"]
@@ -221,29 +210,16 @@ def generate_html(manifest, audio_src, images=None,
     # CDN 地址的 :/? 会被 quote 破坏）
     gsap_src_attr = gsap_src.replace("&", "&amp;").replace('"', "&quot;")
 
-    # portrait 归一化：紧凑竖屏复用 vertical 的布局家族，data-aspect 写
-    # "vertical"（竖屏 CSS 选择器全部照常命中），v_compact 只切紧凑参数。
-    # 归一化放函数本体内而不是 CLI 层，库调用方传 aspect="portrait"
-    # 也能得到正确产物。
+    # portrait 归一化：竖屏 3:4 复用 vertical 布局家族，data-aspect 写
+    # "vertical"（竖屏 CSS 选择器全部照常命中）。归一化放函数本体内而
+    # 不是 CLI 层，库调用方传 aspect="portrait" 也能得到正确产物。
     if aspect == "portrait":
         aspect = "vertical"
-        v_compact = True
 
-    # sub_mode 默认按画幅解析（在 portrait 归一化之后，portrait 走竖屏
-    # 默认 verse）：横屏 bar（经典图文讲解形态）、竖屏 verse（短视频
-    # 歌词流形态）。显式传值不受影响。
-    if sub_mode is None:
-        sub_mode = "bar" if aspect == "landscape" else "verse"
-
-    # 竖屏家族只有 verse：bar 的"底部字幕条 + 正文卡常驻"在竖屏放不下
-    # （1440/1920 高度被大标题+图片占满，正文卡与字幕条互相挤压）。
-    # fail-fast 报错而不是静默降级成 verse——静默换模式会让 CLI 调用方
-    # 以为拿到了 bar 产物。
-    if aspect == "vertical" and sub_mode == "bar":
-        raise ValueError(
-            "竖屏家族（vertical/portrait）仅支持 verse 字幕模式："
-            "bar 的底部字幕条 + 正文要点卡在竖屏高度内放不下。"
-            "如需 bar 形态请用 --aspect landscape。")
+    # 字幕/内容呈现模式固定按画幅绑定（在 portrait 归一化之后解析，不
+    # 作为用户选项暴露）：横屏 bar（经典图文讲解形态）、竖屏 verse
+    # （短视频歌词流形态）。
+    sub_mode = "bar" if aspect == "landscape" else "verse"
 
     # ── 配图/视频归一化 ───────────────────────────────────────────
     # 把字符串简写统一成对象格式（对象是唯一标准格式），后续渲染逻辑只需处理一种结构。
@@ -327,6 +303,16 @@ def generate_html(manifest, audio_src, images=None,
     # 在 title-wrap 流内、随标题下移）。竖屏 body 卡是 flex 流内元素，
     # 不消费该值。
     css_body_top = _bl2.get("top")
+    # 横屏配图段左列内容盒（bar 正文卡 / verse 句子流窗口）的三个可调
+    # 参数（读模板 landscape.body，缺省回退旧行为）：
+    #   leftMargin — 卡片左缘距画面左边（缺省 None=仍与标题文字对齐）
+    #   sideGap    — 卡片右缘与图片左缘的间距（默认 50）
+    #   titleGap   — 卡片顶与"标题组（标题+tagline）底部"的间距；给出后
+    #                top 不再用固定锚点 body.top，而是按标题实际估算行数
+    #                动态推导（单行标题不再留两行标题的预留空隙）
+    css_body_left_margin = _bl2.get("leftMargin")
+    css_body_side_gap = _bl2.get("sideGap", 50)
+    css_body_title_gap = _bl2.get("titleGap")
 
     _sl = tpl_layout["subtitle"]
     # 字号两模式共用（verse 句子流行 / bar 字幕条，横竖屏各自模板值：
@@ -342,12 +328,18 @@ def generate_html(manifest, audio_src, images=None,
     # 在 1440 高度里放不下（100+标题139+48+980+300+80 = 1647 溢出），
     # 4:3 槽（980x735）总高 1402，余 38px 由 verse 的 margin-top:auto 吸收。
     # 竖屏只有 verse（bar 在上方已被拦下），无模式分支。
-    if v_compact:
-        _v_pad = "100px 50px 80px"
-        _v_img_ar = "4/3"
-    else:
-        _v_pad = "220px 50px 190px"
-        _v_img_ar = "1/1"
+    # 全部参数读模板 vertical 块（segCard.padding / image.aspect /
+    # image.marginTop / verse.windowHeight / verse.clipPad），改排版只动
+    # template.json。
+    _v_pad = tpl_layout.get("segCard", {}).get("padding", "100px 50px 80px")
+    _v_img_ar = tpl_layout["image"].get("aspect", "4/3")
+    _v_img_mt = tpl_layout["image"].get("marginTop", 48)
+    _vv = tpl_layout.get("verse", {})
+    _v_verse_h = _vv.get("windowHeight", 300)
+    _v_verse_clip = _vv.get("clipPad", 60)
+    _v_verse_line = _vv.get("linePad", 5)
+    # 竖屏图片槽圆角（横屏走 typography.imageBorderRadius=24，竖屏槽更小）
+    _v_img_radius = tpl_layout["image"].get("borderRadius", 16)
 
     # ── sub_mode 分支产物：字幕/内容呈现两模式各自的 CSS 与 JS ──
     # verse（默认）= 歌词式句子流；bar = 经典底部字幕条 + 正文卡。
@@ -425,27 +417,21 @@ def generate_html(manifest, audio_src, images=None,
   });
 """
     else:
-        _sub_css = f"""/* ── verse 句子流（横竖屏同款，"正文卡+底部字幕"的融合替代）──
-   横屏 = bar 布局框架 + 内容框换滚动框：badge/标题/tagline/图片/进度条
-   与 bar 完全同位，正文要点卡的位置（title-wrap 内、tagline 之下）换成
-   固定高 300px 的滚动句子流窗口，随标题行数浮动（bar 的正文卡行为），
-   DOM 由 Python 侧插进 title-wrap。开场/收尾段例外：agenda/chips 是
-   结构化目录不是句子流，正文保留显示，verse 钉在左列底部（left:50 与
-   标题同轴线，宽 870；bottom:60 + 高 300 → 窗口 y 720-1020，右缘 920
-   不与图片槽 x 970 重叠），标题组居中于窗口上方（title_top 在 Python
-   侧改为 calc((100% - 380px)/2)）。
-   clip 上下各留 60px 内边距且滚动锚点同为 60px：首句/尾句完整落在
-   mask 渐隐区（上下各 14%）之外，不被边缘虚化。竖屏改走 flex 钉底
-   （见下方 vertical 覆盖块）。 */
-.verse{{position:relative;width:100%;height:300px;overflow:hidden;
+        _sub_css = f"""/* ── verse 句子流（竖屏专用，"正文卡+底部字幕"的融合替代）──
+   竖屏 = 大标题/图片槽 + 钉底句子流：窗口高由模板 vertical.verse.
+   windowHeight 控制，DOM 渲染在 seg-card 尾部、由 flex margin-top:auto
+   钉在内容区底部（见下方 vertical 覆盖块）；开场/收尾段 agenda/chips
+   是结构化目录不是句子流，正文保留显示、verse 照常钉底。
+   clip 上下各留 vertical.verse.clipPad 内边距且滚动锚点同步同值：
+   首句/尾句完整落在 mask 渐隐区（上下各 14%）之外，不被边缘虚化。 */
+.verse{{position:relative;width:100%;height:{_v_verse_h}px;overflow:hidden;
   -webkit-mask-image:linear-gradient(transparent,#000 14%,#000 86%,transparent);
   mask-image:linear-gradient(transparent,#000 14%,#000 86%,transparent)}}
-#opening .verse,#closing .verse{{position:absolute;left:50px;bottom:60px;width:870px}}
 /* clip 必须定位：verse-line.offsetTop 需要相对 clip 而不是绝对定位的
    seg-card（否则首行 offsetTop 巨大，滚动公式恒被钳到段落尾部——
    第一句永远在窗口外） */
-.verse-clip{{position:relative;padding:60px 0;transition:transform .45s cubic-bezier(.4,0,.2,1)}}
-.verse-line{{font-size:{css_sub_font};line-height:1.5;font-weight:600;color:{theme_colors["text_color"]};opacity:.62;transition:opacity .3s,color .3s;padding:5px 0;text-align:left}}
+.verse-clip{{position:relative;padding:{_v_verse_clip}px 0;transition:transform .45s cubic-bezier(.4,0,.2,1)}}
+.verse-line{{font-size:{css_sub_font};line-height:1.5;font-weight:600;color:{theme_colors["text_color"]};opacity:.62;transition:opacity .3s,color .3s;padding:{_v_verse_line}px 0;text-align:left}}
 .verse-line.active{{opacity:1!important}}
 .verse-line.past{{opacity:.38!important}}"""
         _v_verse_css = (
@@ -480,12 +466,15 @@ def generate_html(manifest, audio_src, images=None,
     css_agenda_font = f'{_al["fontSize"]}px'
     css_agenda_num = f'{_al["numSize"]}px'
     css_agenda_margin = f'{_al.get("marginTop", 56)}px'
+    # 条目内序号圆与标题文字的间距（.agenda-list 的条目间 gap 用 agenda.gap）
+    css_agenda_item_gap = f'{_al.get("itemGap", 14)}px'
 
     _cl = tpl_layout["chip"]
     css_chip_font = f'{_cl["fontSize"]}px'
     css_chip_margin = f'{_cl.get("marginTop", 96)}px'
     # chip 内边距读模板 chip.padding（横竖屏各自的值都生效，不硬编码）
     css_chip_pad = _cl.get("padding", "14px 28px")
+    css_chip_gap = f'{_cl.get("gap", 16)}px'
 
     _tgl = tpl_layout["tagline"]
     css_tagline_font = f'{_tgl["fontSize"]}px'
@@ -504,15 +493,14 @@ def generate_html(manifest, audio_src, images=None,
         css_img_top = f'{_il["top"]}px' if isinstance(_il["top"], int) else _il["top"]
         css_img_pos = "left:50%;transform:translateX(-50%)"
     else:
-        # 横屏 top 是垂直中线（translateY(-50%)），取值由标题带推导：
-        # 上边缘 = topNews 80 + 1 行标题高（fontSizeNewsImage 72 ×
-        # titleLineHeight 1.25 = 90）+ 30px 间距 = 200——单行标题完整
-        # 避开图片；两行标题的第二行（y 170-260）只许横向停在图片左缘
-        # 以左，估算伸入图片区时生成期告警（见下方标题宽度估算）；
-        # 下边缘 = 200 + 700 = 900 = 1080 − subtitle.height 176 − 4
-        # （字幕条上缘 904 之上 4px 间隙，不与字幕条重叠）→ 高 700、
-        # 中线 550。改标题字号/行高/间距时必须同步重推上边缘；改图片
-        # 高度时同步重推 top（= 上边缘 + 高度/2）。
+        # 横屏 top 是垂直中线（translateY(-50%)），取值由 √2:1 比例与
+        # 整屏垂直居中推导：槽 910×644（右缘距屏幕 right 25px、
+        # 910/√2 ≈ 644）——4:3 生图 contain 后左右留边恰约 25px；槽
+        # 左缘 985，与正文卡（左 50、宽 910）之间留 sideGap 25px。
+        # 垂直居中相对整个画面：top = 1080/2 = 540。注意取舍：两行
+        # 标题（底 260）会与图上缘 218 轻微交叠——单行标题无碍，长
+        # 标题应在写稿阶段控制（或调回低 top）。改槽宽/右距时同步
+        # 重推高（=宽/√2）。
         css_img_top = _il.get("top", "50%")
         if isinstance(css_img_top, int):
             css_img_top = f"{css_img_top}px"
@@ -536,6 +524,20 @@ def generate_html(manifest, audio_src, images=None,
     css_body_gap = tpl_typo.get("bodyLineGap", 12)
     css_body_radius = tpl_typo.get("bodyBorderRadius", 16)
     css_body_border_left = tpl_typo.get("bodyBorderLeft", 4)
+    # 正文外观开关（template body.card）：true（默认）= 经典卡片（底色
+    # 圆角盒 + 左边框 + 毛玻璃）；false = 裸文字。2026-09-06 实测过默认
+    # 裸文字：直接放在网格背景上太丑，用户否决——卡片保留为默认值，开
+    # 关仅留给特殊需要。PPT 感的治理改走字号层级：body.fontSize 38 <
+    # subtitle.fontSize 46，口播字幕是画面主导文字、正文是辅助信息层。
+    if _bl2.get("card", True):
+        css_body_chrome = (f'padding:{css_body_pad};'
+                           f'background:{theme_colors["body_bg"]};'
+                           f'border-radius:{css_body_radius}px;'
+                           f'border-left:{css_body_border_left}px solid '
+                           f'{theme_colors["soft_border"]};'
+                           f'backdrop-filter:blur(4px)')
+    else:
+        css_body_chrome = 'padding:0'
     css_img_radius = tpl_typo.get("imageBorderRadius", 24)
     css_badge_weight = tpl_typo.get("badgeWeight", 900)
     # v5.0.1: fontFamily 之前只在 template.json 里躺着、CSS 却硬编码——改模板
@@ -573,13 +575,22 @@ def generate_html(manifest, audio_src, images=None,
     # 收集所有内容段落的标题（按顺序），用于给开场页生成"内容目录"目录、
     # 结尾页生成"回顾"标签条——这两个页面原本只有大标题+副标题，画面偏空。
     # 数据直接从已有的 segments 里取（标题本来就有），不需要额外的 AI 调用
-    # 或新的 manifest 字段。条目全量呈现、不截断：条数多时开场目录靠
-    # 动态字号收缩适配（见 agenda 分支），chips 靠 flex 换行容纳。
+    # 或新的 manifest 字段。条目软上限 = 模板 agenda.maxItems（默认 7）：
+    # 超出时取前 N 条显示并打 warn——写稿阶段应把条目控制在 7 条以内，
+    # 确有必要突破时调大模板 agenda.maxItems；条数多时仍靠动态字号收缩
+    # 适配（见 agenda 分支），chips 靠 flex 换行容纳。
     content_agenda = [
         {"title": seg.get("title", ""), "accent": expand_hex(seg.get("accent", DEFAULT_ACCENT))}
         for seg in segments
         if is_content_sid(seg.get("id"))
     ]
+    _ag_cap = tpl_layout.get("agenda", {}).get("maxItems", 7)
+    if len(content_agenda) > _ag_cap:
+        print(f"[warn] 目录条目共 {len(content_agenda)} 条，超过上限 {_ag_cap}："
+              f"开场目录/结尾回顾只显示前 {_ag_cap} 条。写稿时应把内容段控制在 "
+              f"{_ag_cap} 条以内；确有必要突破时调大 config/template.json 的 "
+              f"agenda.maxItems。", file=sys.stderr)
+        content_agenda = content_agenda[:_ag_cap]
 
     # ── Build segment card HTML + GSAP ─────────────────────────────
     seg_cards = []
@@ -623,18 +634,22 @@ def generate_html(manifest, audio_src, images=None,
         # #17 同类）；其余配图段（flow 模式内容段/opening/closing）
         # 统一 50px 左边距，与图片槽的 right:50 对称（同一套页边距）。
         if has_image:
+            # 标题右缘缩进读模板 title.rightInset（横屏 110/竖屏 60）
+            _tri = _tl.get("rightInset", 110)
             left_px = (
-                _tl.get("leftWithBadge", 205) if (is_news and badge) else 50
+                _tl.get("leftWithBadge", 205) if (is_news and badge)
+                # 非 badge 配图段与正文卡同轴线（body.leftMargin），同一套页边距
+                else _bl2.get("leftMargin", 50)
             )
             title_left = f"{left_px}px"
             title_right = "auto"
             if _il.get("centerHorizontal"):
                 # 竖屏配图在标题下方居中，标题宽度不受图片约束，尽量占满
-                title_width = f"{max(width - left_px - 60, 200)}px"
+                title_width = f"{max(width - left_px - _tri, 200)}px"
             else:
                 # 横屏：标题横跨在正文与图片上方，右边界不必跟图片左缘对齐，
                 # 给足宽度；正文宽度由模板 body.maxWidth 控制（与图片留清晰边界）。
-                title_width = f"{max(width - left_px - 110, 200)}px"
+                title_width = f"{max(width - left_px - _tri, 200)}px"
         else:
             # 用显式像素宽度而不是 "auto"（配合 left+right 由浏览器计算）——
             # 旧版 WebKit 渲染引擎（比如 wkhtmltoimage 用的那个内核）在
@@ -648,8 +663,8 @@ def generate_html(manifest, audio_src, images=None,
             # 写法，不是"绕过 bug 的临时代码"，所以不需要"探测引擎版本后切回
             # auto/%"这种双路径逻辑，那样反而多一条没被充分测过的代码分支。
             # 唯一需要留意的：如果以后确实想把这段改回 auto/%（比如想减少
-            # Python 里的像素计算逻辑），必须先跑一遍
-            # scripts/visual_regression.py 的关键帧像素回归（对比 baseline），
+            # Python 里的像素计算逻辑），必须先跑一遍渲染快照
+            # （npx hyperframes check --snapshots）逐帧目检，
             # 不能只看生成的 CSS 文本或 DOM 结构断言——第 14 条的教训就是这类
             # 布局 bug 只有真正渲染截图才暴露。
             left_px = (
@@ -674,21 +689,15 @@ def generate_html(manifest, audio_src, images=None,
             _title_font_px = (_tl["fontSizeNews"] if is_news
                               else _tl["fontSizeOther"])
         title_size = f"{_title_font_px}px"
-        # 横屏配图段标题带只预留 1 行 + 第二行到图片左缘的宽度（图片框
-        # 上边缘 200 的推导前提，见上方 image 注释）：标题估算总宽超过
-        # "首行整行 + 第二行安全宽"时提前警告——第二行会伸进图片纵向
-        # 区间、可能压图。字宽按 CJK/全角 1em、其余 0.62em 估，渲染字体
-        # 的微差由 30px 间距吸收。
+        # 标题行数估算（供正文卡动态 top 推导用）：字宽按 CJK/全角 1em、
+        # 其余 0.62em 估。图框改 √2:1 后上缘 292 已在两行标题（底 260）
+        # 之下，两行标题不再有压图风险，早年的"第二行伸入图片区"告警
+        # 已随其前提一并移除。
         if aspect == "landscape" and has_image:
             _tw_px = max(width - left_px - 110, 200)
-            _l2_safe = css_img_left_edge - left_px
             _est_w = int(sum(
                 1.0 if (ord(c) >= 0x2E80 or 0xFF00 <= ord(c) <= 0xFFEF)
                 else 0.62 for c in seg["title"]) * _title_font_px)
-            if _est_w > _tw_px + _l2_safe:
-                print(f"[warn] {sid} 标题过长：第二行会伸入图片区"
-                      f"（图片上缘只预留 1 行标题带），建议缩短标题",
-                      file=sys.stderr)
         # 标题 top 读模板 title.topNews/topOther（topNews 是裸数字按 px，
         # topOther 是带单位字符串如 "30%"，按类型分别处理）。横屏配图段
         # 一律顶部锚定（topNews）：图片框上边缘固定在"topNews + 1 行标题
@@ -701,14 +710,6 @@ def generate_html(manifest, audio_src, images=None,
                     else _tl["topOther"])
         title_top = f"{_top_raw}px" if isinstance(_top_raw, (int, float)) else str(_top_raw)
         title_transform = ""
-
-        # 横屏 verse 开场/收尾：标题组（含 agenda/chips）垂直居中于底部
-        # 钉位的 verse 窗口上方的空间（1080-380=700 的中心 350），而非
-        # 全屏中心——高 agenda（最多 8 条）下缘才不会与 verse 窗口重叠
-        if (sub_mode == "verse" and aspect == "landscape"
-                and not is_news):
-            title_top = "calc((100% - 380px)/2)"
-            title_transform = "transform:translateY(-50%);"
 
         # Tagline
         tagline_html = ""
@@ -729,6 +730,27 @@ def generate_html(manifest, audio_src, images=None,
                 f'style="{_tag_style}">{esc(seg["tagline"])}</div>'
             )
 
+        # 横屏配图段左列内容盒（bar 正文卡 / verse 句子流窗口）统一几何：
+        # 左缘 = body.leftMargin（缺省仍对齐标题文字 left_px）；宽度使右缘
+        # 与图片左缘保持 body.sideGap；顶部 = "标题组（标题+tagline）底部"
+        # + body.titleGap——标题组底部按标题估算行数动态推导，单行标题
+        # 不再预留两行标题的空隙；titleGap 未配置时回退固定锚点 body.top
+        # （旧模板兼容，位置不随标题折行浮动）。
+        _box_left, _box_top, _box_w = left_px, css_body_top, None
+        if aspect == "landscape" and has_image:
+            _lm = (css_body_left_margin if css_body_left_margin is not None
+                   else left_px)
+            _box_left = _lm
+            _box_w = max(300, min(css_body_max or 870,
+                                  css_img_left_edge - _lm - css_body_side_gap))
+            if css_body_title_gap is not None:
+                _est_lines = 1 if _est_w <= _tw_px else 2
+                _tgroup_bottom = (int(_tl["topNews"])
+                                  + _est_lines * _title_font_px * css_title_lh
+                                  + css_tagline_mt
+                                  + _tgl["fontSize"] * css_tagline_lh)
+                _box_top = int(_tgroup_bottom + css_body_title_gap)
+
         # Body text — each line gets its own ID for stagger animation
         body_html = ""
         body_line_count = 0
@@ -742,30 +764,29 @@ def generate_html(manifest, audio_src, images=None,
             body_line_count = len(body_lines)
             _body_parts = []
             for j, line in enumerate(body_lines):
-                _wrapped = wrap_numbers(esc(line), ac)
+                # num-accent 用对比度安全色：正文裸排在页面底上（card:false
+                # 后尤其如此），原色 accent（如 #ef5350 红）在浅色主题米白
+                # 底上只有 ~2.79:1，不过 WCAG 大字 3:1——与 tagline 同一
+                # 处理：浅底用 darken 加深、深底向白提亮。
+                _num_color = (mix(ac, "#ffffff", 0.62) if _dark_theme
+                              else darken(ac))
+                _wrapped = wrap_numbers(esc(line), _num_color)
                 if "num-accent" in _wrapped:
                     numpop_ids.add(f"{sid}-{j}")
                 _body_parts.append(
                     f'<div class="body-line" id="bodyline-{sid}-{j}">{_wrapped}</div>'
                 )
             body_items = "".join(_body_parts)
-            # 配图时正文框收窄（max-width 来自模板 body.maxWidth），
-            # 与右侧图片保持明显间距；标题仍可占满标题区宽度。
-            # 正文卡片左边距与标题对齐（同一套页边距，不用负 margin 近似）。
+            # 配图时正文框收窄（上限来自模板 body.maxWidth），与右侧图片
+            # 保持明显间距；标题仍可占满标题区宽度。
             if aspect == "landscape" and has_image:
                 # 横屏配图段：正文卡是独立绝对定位盒，不进 title-wrap
-                # 文档流——锚定模板 body.top（标题组最坏情况 2 行标题 +
-                # tagline 槽 y 338 之下 30px = 368，位置不随标题折几行
-                # 浮动），左缘对齐标题文字
-                # （left_px）。宽度取"图片左缘 − 50px 间距 − 左缘"与模板
-                # maxWidth 的较小值：badge 段左缘 205，固定 870 宽会让
-                # 卡片右缘 1075 压进图片区（图片左缘 1010）。竖屏配图段
-                # 保持 flex 流内元素（vertical CSS 全量覆盖 .body-text），
-                # 走 max-width 分支。
-                _bw = max(300, min(css_body_max or 870,
-                                   css_img_left_edge - left_px - 50))
-                body_style = (f' style="position:absolute;left:{left_px}px;'
-                              f'top:{css_body_top}px;width:{_bw}px;'
+                # 文档流——几何（left/top/width）由上方 _box_* 统一推导
+                # （body.leftMargin / titleGap / sideGap，见彼处注释）。
+                # 竖屏配图段保持 flex 流内元素（vertical CSS 全量覆盖
+                # .body-text），走 max-width 分支。
+                body_style = (f' style="position:absolute;left:{_box_left}px;'
+                              f'top:{_box_top}px;width:{_box_w}px;'
                               f'margin-top:0"')
             elif has_image and css_body_max:
                 body_style = f' style="max-width:{css_body_max}px"'
@@ -894,40 +915,30 @@ def generate_html(manifest, audio_src, images=None,
         # "0 100px" 内边距（那是对无图居中标题留的边距），否则实际文字宽度
         # 会被 padding 吃掉 200px，导致换行过早（标题挤在一起）。
         title_pad_inline = "padding:0;" if has_image else ""
-        # 字幕/内容 DOM 按 sub_mode 二选一：
+        # 字幕/内容 DOM 按模式二选一（模式由画幅固定：横屏 bar、竖屏 verse）：
         # - verse：歌词式句子流——该段全部句子按序渲染成静态行（完整
         #   句子，CSS 自动换行），运行时由 cue 的 si 高亮当前句、已播句
         #   淡出、窗口随播报滚动。正文信息由句子流逐句呈现，被替代段落
         #   的 body 卡不再渲染（见 _verse_kills_body）。
         # - bar：经典底部字幕条（sub-bar），正文卡正常显示。
-        # verse 替代 body 卡的段落：横屏内容段（verse 窗口占据正文卡
-        # 位置）、竖屏有图段（大图+句子流已满高，body 卡放不下
-        # ——原来用 CSS display:none 兜，改 DOM 层不渲染，GSAP stagger
-        # 不再指向不存在的行）。竖屏无图段与开场/收尾保留 body/agenda：
-        # 无图段只有标题太单薄，agenda 是结构化目录不能换成句子流。
-        _verse_kills_body = sub_mode == "verse" and (
-            (aspect == "landscape" and not _is_oc)
-            or (aspect == "vertical" and has_image)
-        )
+        # verse 替代 body 卡的段落：竖屏有图段（大图+句子流已满高，body
+        # 卡放不下——原来用 CSS display:none 兜，改 DOM 层不渲染，GSAP
+        # stagger 不再指向不存在的行）。竖屏无图段与开场/收尾保留
+        # body/agenda：无图段只有标题太单薄，agenda 是结构化目录不能
+        # 换成句子流。
+        _verse_kills_body = sub_mode == "verse" and has_image
         if _verse_kills_body:
             body_html = ""
             body_line_count = 0
             agenda_count = 0
             recap_count = 0
-        # 横屏内容段的 verse 占据正文卡位置：有图段是独立绝对定位盒
-        # （与 body 卡同锚点/同宽推导，不进 title-wrap 文档流）；无图段
-        # 留在 title-wrap 流内居中（居中版式的组成部分）。竖屏所有段与
-        # 横屏开场/收尾的 verse 留在 seg-card 尾部（竖屏 flex 钉底 /
-        # 横屏开场收尾 CSS 钉底）
-        # body 卡同规则：横屏配图段独立于 title-wrap（标题框与内容框
+        # body 卡规则：横屏配图段独立于 title-wrap（标题框与内容框
         # 各自锚定，互不约束——内容框位置不随标题折行浮动）。开场/收尾
         # 与无图段的 agenda/body 是居中版式的组成部分，保留流内布局。
+        # verse DOM（竖屏）统一渲染在 seg-card 尾部，由竖屏 flex
+        # margin-top:auto 钉底。
         _body_detached = (aspect == "landscape" and has_image
                           and bool(body_html))
-        _verse_in_wrap = (sub_mode == "verse" and aspect == "landscape"
-                          and not _is_oc and not has_image)
-        _verse_detached = (sub_mode == "verse" and aspect == "landscape"
-                           and not _is_oc and has_image)
         verse_html = ""
         sub_bar_html = ""
         if sub_mode == "verse":
@@ -939,56 +950,21 @@ def generate_html(manifest, audio_src, images=None,
                 f'{esc(_s2["text"])}</div>'
                 for _k, _s2 in enumerate(seg["sentences"])
             ]
-            if _verse_detached:
-                # 有图段：独立左列盒子——position:absolute 锚定 body.top
-                # （与 bar 模式正文卡同一锚点，两种模式"内容框位置"视觉
-                # 连续），左缘对齐标题文字（left_px），宽度与 body 卡同
-                # 推导（图片左缘 − 50px 间距 − 左缘，与模板 maxWidth 取
-                # 小——width:100% 会继承 title-wrap 全宽、长句右半截滑到
-                # 图片底下被遮，layout 检查器以 text_occluded 暴露）。
-                _vwin_w = max(300, min(css_body_max or 870,
-                                       css_img_left_edge - left_px - 50))
-                _vstyle = (f'position:absolute;left:{left_px}px;'
-                           f'top:{css_body_top}px;width:{_vwin_w}px')
-                verse_html = (
-                    f'\n    <div class="verse" id="verse-{sid}" '
-                    f'style="{_vstyle}" '
-                    f'data-layout-allow-overflow data-layout-allow-overlap '
-                    f'data-layout-allow-occlusion>'
-                    f'<div class="verse-clip" data-accent="{ac}">'
-                    f'{"".join(_vlines)}</div></div>'
-                )
-            elif _verse_in_wrap:
-                # 无图段 title-wrap 全宽居中版式，verse 同宽居中（段落间
-                # 视觉宽度不跳变）。margin-top 与 bar 的正文卡同值
-                # （css_body_margin_top），保持"内容框位置"的视觉连续。
-                _vwin_w = css_body_max or 870
-                _vstyle = (f'width:{_vwin_w}px;'
-                           f'margin:{css_body_margin_top}px auto 0')
-                verse_html = (
-                    f'\n      <div class="verse" id="verse-{sid}" '
-                    f'style="{_vstyle}" '
-                    f'data-layout-allow-overflow data-layout-allow-overlap '
-                    f'data-layout-allow-occlusion>'
-                    f'<div class="verse-clip" data-accent="{ac}">'
-                    f'{"".join(_vlines)}</div></div>'
-                )
-            else:
-                verse_html = (
-                    # 三个 layout 豁免属性都源于同一误报机制：滚动出窗的
-                    # 行视觉上被窗口 overflow:hidden 裁掉，但静态 DOM rect
-                    # 仍在原位——越过窗口上缘与标题区相交（content_overlap，
-                    # allow-overlap）、越过窗口下缘与底部元素（如进度条）
-                    # 相交（text_occluded，allow-occlusion，portrait 底部
-                    # 留白只有 80px 时会触发）、整体越出卡片（allow-
-                    # overflow）。活动行锚定在窗口内 60px，真实重叠不可能
-                    # 发生。
-                    f'\n    <div class="verse" id="verse-{sid}" '
-                    f'data-layout-allow-overflow data-layout-allow-overlap '
-                    f'data-layout-allow-occlusion>'
-                    f'<div class="verse-clip" data-accent="{ac}">'
-                    f'{"".join(_vlines)}</div></div>'
-                )
+            verse_html = (
+                # 三个 layout 豁免属性都源于同一误报机制：滚动出窗的
+                # 行视觉上被窗口 overflow:hidden 裁掉，但静态 DOM rect
+                # 仍在原位——越过窗口上缘与标题区相交（content_overlap，
+                # allow-overlap）、越过窗口下缘与底部元素（如进度条）
+                # 相交（text_occluded，allow-occlusion，portrait 底部
+                # 留白只有 80px 时会触发）、整体越出卡片（allow-
+                # overflow）。活动行锚定在窗口内 60px，真实重叠不可能
+                # 发生。
+                f'\n    <div class="verse" id="verse-{sid}" '
+                f'data-layout-allow-overflow data-layout-allow-overlap '
+                f'data-layout-allow-occlusion>'
+                f'<div class="verse-clip" data-accent="{ac}">'
+                f'{"".join(_vlines)}</div></div>'
+            )
         else:
             sub_bar_html = (
                 f'\n    <div class="sub-bar">\n'
@@ -1012,7 +988,6 @@ def generate_html(manifest, audio_src, images=None,
             f'{esc(seg["title"])}</div>\n'
             f'      {tagline_html}\n'
             f'      {body_html if not _body_detached else ""}\n'
-            f'      {verse_html if _verse_in_wrap else ""}\n'
             f'    </div>'
             f'{image_html}\n'
             # 横屏配图段的 body 卡是独立绝对定位盒（不进 title-wrap），
@@ -1022,7 +997,7 @@ def generate_html(manifest, audio_src, images=None,
             f'    {body_html if _body_detached else ""}\n'
             f'    <div class="seg-progress" id="prog-{sid}" '
             f'style="background:{ac};width:0"></div>\n'
-            f'    {verse_html if not _verse_in_wrap else ""}{sub_bar_html}\n'
+            f'    {verse_html}{sub_bar_html}\n'
             f'  </div>'
         )
 
@@ -1203,22 +1178,6 @@ def generate_html(manifest, audio_src, images=None,
                 f'ease:"{a_img.get("ease", "power2.out")}"}},'
                 f'{s + a_img.get("startDelay", 0.2) * _k:.2f})'
             )
-            # Ken Burns 缓推：整槽极缓放大到 kenBurns.scale，消除长段
-            # 静态图的死屏感。缩放整个图片槽而非内层 img——槽自带圆角
-            # 与光晕，整体缩放无溢出裁切问题；origin 按 sid 序号在四角
-            # 轮换避免每段同向推近的机械感；ease none 匀速，渲染确定性
-            # 不受影响。短段（≤4s）不值得推，直接跳过
-            a_kb = a_.get("kenBurns", {})
-            _kb_scale = float(a_kb.get("scale", 1.05))
-            if _kb_scale > 1.001 and d > 4.0:
-                _kb_origins = ("30% 30%", "70% 30%", "30% 70%", "70% 70%")
-                _kb_o = _kb_origins[int(re.sub(r"\D", "", sid) or "0") % len(_kb_origins)]
-                gsap_lines.append(
-                    f'tl.fromTo("#img-{sid}",'
-                    f'{{scale:1,transformOrigin:"{_kb_o}"}},'
-                    f'{{scale:{_kb_scale},duration:{d - a_img.get("startDelay", 0.2) * _k:.2f},'
-                    f'ease:"none"}},{s + a_img.get("startDelay", 0.2) * _k:.2f})'
-                )
         gsap_lines.append(
             f'tl.to("#prog-{sid}",{{width:"100%",duration:{d:.2f},ease:"none"}},{s:.2f})'
         )
@@ -1254,7 +1213,7 @@ def generate_html(manifest, audio_src, images=None,
     # bar 模式下每行直接渲染进字幕条。
     # 切分参数来自 _script_utils.subtitle_params_for（与 export_extras.py
     # 导出的 SRT 共用同一份，保证片内字幕与外挂字幕逐条对齐）。
-    _sub_p = subtitle_params_for(aspect, sub_mode)
+    _sub_p = subtitle_params_for(aspect)
     _sub_cap = _sub_p["max_chars"]
     _sub_slack = _sub_p["slack"]
     _sub_hard = _sub_p["hard_cap"]
@@ -1323,17 +1282,17 @@ body{{font-family:{css_font_family}}}
 .seg-title-wrap{{position:absolute;right:0;padding:{css_title_pad}}}
 .seg-title{{font-weight:{css_title_weight};color:{theme_colors["text_color"]};line-height:{css_title_lh};word-break:break-word}}
 .tagline{{font-size:{css_tagline_font};margin-top:{css_tagline_mt}px;line-height:{css_tagline_lh};font-weight:{css_tagline_weight}}}
-.body-text{{margin-top:{css_body_margin_top}px;padding:{css_body_pad};background:{theme_colors["body_bg"]};border-radius:{css_body_radius}px;border-left:{css_body_border_left}px solid {theme_colors["soft_border"]};backdrop-filter:blur(4px)}}
+.body-text{{margin-top:{css_body_margin_top}px;{css_body_chrome}}}
 .body-line{{font-size:{css_body_font};color:{theme_colors["body_text"]};line-height:{css_body_lh};font-weight:{css_body_weight}}}
 .body-line+.body-line{{margin-top:{css_body_gap}px}}
 .num-accent{{display:inline-block;font-weight:700}}
 .agenda-list{{display:flex;flex-direction:column;gap:{css_agenda_gap}px;margin-top:{css_agenda_margin};align-items:flex-start;text-align:left}}
-.agenda-item{{display:flex;align-items:flex-start;gap:14px}}
+.agenda-item{{display:flex;align-items:flex-start;gap:{css_agenda_item_gap}}}
 .agenda-num{{flex-shrink:0;width:{css_agenda_num};height:{css_agenda_num};border-radius:50%;
   display:flex;align-items:center;justify-content:center;font-weight:800;
   font-size:calc({css_agenda_num} * 0.5);color:{AGENDA_NUM_TEXT_COLOR}}}
 .agenda-title{{font-size:{css_agenda_font};font-weight:600;color:{theme_colors["body_text"]}}}
-.recap-chips{{display:flex;flex-wrap:wrap;gap:16px;margin-top:{css_chip_margin};justify-content:center;
+.recap-chips{{display:flex;flex-wrap:wrap;gap:{css_chip_gap};margin-top:{css_chip_margin};justify-content:center;
   max-width:100%}}
 .recap-chip{{padding:{css_chip_pad};border-radius:999px;border:2px solid;
   font-size:{css_chip_font};font-weight:600;color:{theme_colors["body_text"]};
@@ -1348,20 +1307,19 @@ body{{font-family:{css_font_family}}}
 
 /* ── Vertical (9:16) 大标题 + 图片 + 歌词式句子流（竖屏唯一模式）──
    Only activates when #root has data-aspect="vertical".
-   portrait（3:4，1080x1440）复用本块全部规则，仅 _v_pad/_v_img_ar
-   两处紧凑取值不同（见上方 v_compact 分支：上下留白 100/80、图片槽
-   4:3）。
-   竖屏只有 verse（bar 在 generate_html 入口已被拦下）。结构：大标题
-   区（顶部，边距 220）→ 图片（正方形槽：占满内容宽度、
-   aspect-ratio 1:1，980×980）→ verse 句子流（钉在内容区底部，窗口
-   300px）。verse/clip/line 的通用规则在上方基础块，这里只覆盖竖屏的
-   定位差异：verse 从横屏的"title-wrap 内文档流/开场收尾钉底"改回
-   seg-card flex 流内钉底（margin-top:auto）。
+   portrait（3:4，1080x1440）复用本块全部规则，紧凑取值来自模板
+   vertical 块（compactPadding / image.aspect / image.marginTop /
+   verse.windowHeight / verse.clipPad，见上方参数读取处）。
+   竖屏只有 verse。结构：大标题
+   区（顶部，边距 220）→ 图片（模板 image.aspect 控制槽比例，默认
+   4:3）→ verse 句子流（钉在内容区底部，窗口 vertical.verse.
+   windowHeight）。verse/clip/line 的通用规则在上方基础块，这里只覆盖竖屏的
+   定位差异：verse 渲染在 seg-card 尾部、flex 流内钉底（margin-top:auto）。
    verse 对齐规则：所有段落（含开场/收尾）的 verse 上边界钉在内容区
-   底部同一位置——内容段图片是固定正方形，标题行数差异由图片与句子流
-   之间的留白吸收（verse 的 margin-top:auto），不传导给 verse 位置；
-   开场/收尾标题垂直居中于句子上方的空间（margin:auto 0——flex 的
-   自由空间先被 auto margin 均分，标题居中的同时 verse 仍钉底与内容
+   底部同一位置——内容段图片槽高度随 aspect 推导，标题行数差异由图片
+   与句子流之间的留白吸收（verse 的 margin-top:auto），不传导给 verse
+   位置；开场/收尾标题垂直居中于句子上方的空间（margin:auto 0——flex
+   的自由空间先被 auto margin 均分，标题居中的同时 verse 仍钉底与内容
    段齐平；文字仍居中）。侧边距统一 50px（标题/图片/句子流对齐同一
    轴线；1080−50×2=980 即图片槽的宽度）。 */
 [data-aspect="vertical"] .seg-card{{display:flex!important;flex-direction:column!important;padding:{_v_pad}!important}}
@@ -1369,7 +1327,7 @@ body{{font-family:{css_font_family}}}
 [data-aspect="vertical"] .seg-title-wrap{{position:relative!important;left:auto!important;right:auto!important;top:auto!important;transform:none!important;width:100%!important;padding:0!important;text-align:left!important;flex-shrink:0!important}}
 [data-aspect="vertical"] .seg-title{{line-height:1.35!important}}
 [data-aspect="vertical"] .tagline{{margin-top:12px!important;padding-left:16px}}
-[data-aspect="vertical"] .seg-image{{position:relative!important;top:auto!important;left:auto!important;right:auto!important;transform:none!important;width:100%!important;max-width:100%!important;height:auto!important;aspect-ratio:{_v_img_ar}!important;flex:0 1 auto!important;margin:48px 0 0!important;border-radius:16px!important}}
+[data-aspect="vertical"] .seg-image{{position:relative!important;top:auto!important;left:auto!important;right:auto!important;transform:none!important;width:100%!important;max-width:100%!important;height:auto!important;aspect-ratio:{_v_img_ar}!important;flex:0 1 auto!important;margin:{_v_img_mt}px 0 0!important;border-radius:{_v_img_radius}px!important}}
 [data-aspect="vertical"] .seg-image img,[data-aspect="vertical"] .seg-image video{{width:100%!important;height:100%!important;object-fit:contain!important}}
 [data-aspect="vertical"] .body-text{{margin:24px 0 0!important;padding:20px 24px!important;max-width:100%!important;margin-left:0!important}}
 [data-aspect="vertical"] .agenda-list{{margin-left:0!important;padding-left:16px}}
@@ -1402,7 +1360,7 @@ const tl = gsap.timeline({{paused:true}});
   const cues = [
     {sub_cues_js}
   ];
-  // verse 句子流：静态行集合（verse 模式横竖屏都渲染；bar 模式集合为
+  // verse 句子流：静态行集合（竖屏 verse 渲染；横屏 bar 集合为
   // 空、verseUpdate 自然跳过——机制保留是为了两模式共用同一份 cue 驱动）。
   // 渲染器逐帧 seek 触发 onUpdate（非线性顺序），测量做懒缓存——布局值
   // （offsetTop/clientHeight/scrollHeight）不受 transform 与 seek 顺序影
@@ -1440,12 +1398,12 @@ const tl = gsap.timeline({{paused:true}});
         L.el.classList.toggle("past", !!act && di < si);
       }}
       if (act) {{
-        // 歌词式滚动：active 行滚到窗口顶部往下 60px（= clip 顶部
+        // 歌词式滚动：active 行滚到窗口顶部往下 clipPad px（= clip 顶部
         // 内边距，与 .verse-clip 的 padding 保持一致——首句/尾句完整
         // 落在 mask 渐隐区之外，不被边缘虚化）；首行不滚出顶、末行
         // 不露底白（clip 比窗口矮时整体不滚）
         const y = c.clipH <= c.winH ? 0
-          : Math.max(c.winH - c.clipH, Math.min(0, 60 - act.top));
+          : Math.max(c.winH - c.clipH, Math.min(0, {_v_verse_clip} - act.top));
         c.clip.style.transform = "translateY(" + y + "px)";
       }}
     }}
@@ -1607,11 +1565,11 @@ def main():
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
     parser.add_argument("--aspect", default="landscape",
-                        choices=["landscape", "vertical", "portrait", "both"],
-                        help="画幅比例 (landscape=1920x1080 横屏, "
-                             "vertical=1080x1920 竖屏, portrait=1080x1440 "
-                             "紧凑竖屏（3:4，复用竖屏布局、上下留白收窄、"
-                             "图片槽 4:3），both=一次性生成两个文件，"
+                        choices=["landscape", "portrait", "both"],
+                        help="画幅比例 (landscape=1920x1080 横屏 16:9, "
+                             "portrait=1080x1440 竖屏 3:4（复用竖屏布局家族、"
+                             "上下留白收窄、图片槽 4:3；抖音/快手等沉浸式 feed "
+                             "按宽度适配保留完整画面），both=一次性生成两个文件，"
                              "自动覆盖 --width/--height；both 模式下竖屏版文件名"
                              "在 -o 指定的文件名基础上插入 .vertical 后缀)")
     parser.add_argument("--theme", default="cream",
@@ -1619,14 +1577,6 @@ def main():
                         help="主题配色 (背景/网格/文字/body 背景)，默认 cream（米白色科技风："
                              "暖米白背景 + 冷蓝灰网格线 + 石墨黑文字）。可选主题见 "
                              "config/theme_registry.json；如何按内容基调选主题见 SKILL.md「主题选择」")
-    parser.add_argument("--sub-mode", default=None,
-                        choices=["verse", "bar"],
-                        help="字幕/内容呈现模式，默认按画幅取：横屏 bar（经典"
-                             "形式：底部字幕条 + 正文要点卡片 + 说话人标签）、"
-                             "竖屏家族 verse（歌词式句子流：当前句高亮、已播句"
-                             "淡出、随播报滚动）。竖屏家族只有 verse（bar 放不"
-                             "下会报错）；横屏显式传 verse = bar 布局框架 + "
-                             "正文卡位置换滚动句子流窗口")
     parser.add_argument("--fps", type=int, default=24,
                         help="输出帧率（写入 HTML 的 data-fps；渲染时可用 --fps 覆盖，"
                              "默认 24，官方支持 24/30/60）")
@@ -1642,16 +1592,6 @@ def main():
     # 而不是静默写进 data-fps 等渲染时才炸
     if args.fps not in (24, 30, 60):
         parser.error(f"--fps 仅支持 24/30/60（官方支持值），收到: {args.fps}")
-
-    # 竖屏家族只有 verse（generate_html 函数层会再拦一道，这里是 CLI
-    # 侧的人话报错：argparse.error 带用法说明、退出码 2）。both 也不行
-    # ——both 会产出竖屏版，竖屏版没有 bar 可用。
-    if (args.aspect != "landscape" and args.sub_mode == "bar"):
-        parser.error(
-            f"--aspect {args.aspect} 不支持 --sub-mode bar："
-            "竖屏家族高度被大标题+图片占满，底部字幕条 + 正文卡放不下，"
-            "仅支持 verse（歌词式句子流）。如需 bar 形态请用 "
-            "--aspect landscape。")
 
     try:
         manifest = load_timing_manifest(args.manifest)
@@ -1723,25 +1663,22 @@ def main():
         gsap_src = ensure_local_gsap(out_dir_for_gsap) or GSAP_CDN_URL
 
     def _render_one(aspect, width, height, output_path):
-        """渲染单个画幅版本。--aspect both 会对 landscape/vertical 各调用一次。"""
+        """渲染单个画幅版本。--aspect both 会对 landscape/portrait 各调用一次。"""
         import shutil  # 函数内局部导入（音频拷贝分支也有 import shutil，统一局部作用域）
         w, h = width, height
         out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
-        if aspect in ("vertical", "portrait"):
-            # 竖屏家族固定画幅（vertical=1080x1920 / portrait=1080x1440）；
-            # 用户显式传了非默认 --width/--height 会被静默忽略——打警告
-            # 说明，而不是无声吞掉
-            _vh = 1440 if aspect == "portrait" else 1920
-            if (args.width, args.height) not in ((1920, 1080), (1080, 1920),
-                                                 (1080, 1440)):
-                print(f"[warn] --aspect {aspect} 固定使用 1080x{_vh} 画幅，"
+        if aspect == "portrait":
+            # 竖屏固定画幅 1080x1440（3:4）；用户显式传了非默认
+            # --width/--height 会被静默忽略——打警告说明，而不是无声吞掉
+            if (args.width, args.height) not in ((1920, 1080), (1080, 1440)):
+                print(f"[warn] --aspect portrait 固定使用 1080x1440 画幅，"
                       f"显式传入的 --width/--height（{args.width}x{args.height}）"
                       f"对竖屏版不生效。", file=sys.stderr)
-            w, h = 1080, _vh
+            w, h = 1080, 1440
         # CSS layout uses fixed offsets (padding:0 100px, right:0, etc.) that
         # assume a 1920x1080 (16:9) frame. Non-16:9 ratios will misalign titles
         # and image cards. Warn instead of silently producing broken layouts.
-        # 竖屏家族（9:16 与 3:4 portrait）为有意为之的画幅，无需警告。
+        # 竖屏 3:4 portrait 为有意为之的画幅，无需警告。
         if aspect == "landscape" and w > 0 and h > 0:
             ratio = w / h
             if abs(ratio - (16 / 9)) > 0.01:
@@ -1797,9 +1734,7 @@ def main():
 
         html = generate_html(manifest, audio_src, images=images,
                              width=w, height=h, gsap_src=gsap_src,
-                             aspect=aspect, theme=args.theme, fps=args.fps,
-                             sub_mode=args.sub_mode,
-                             v_compact=(aspect == "portrait"))
+                             aspect=aspect, theme=args.theme, fps=args.fps)
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         # 原子写：index.html 是渲染输入，写到一半被打断会留下半份 HTML——
@@ -1815,7 +1750,14 @@ def main():
         preview_js = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "preview.js")
         if os.path.isfile(preview_js):
-            shutil.copy2(preview_js, os.path.join(out_dir, "preview.js"))
+            _dst_preview = os.path.join(out_dir, "preview.js")
+            # copy2 会保留源文件的只读权限位——技能目录的 preview.js 是
+            # r--r--r--，目标已存在时二次生成必然 PermissionError（复发性
+            # 坑：首次生成成功、重跑就炸）。覆盖前先确保可写。
+            if os.path.exists(_dst_preview):
+                os.chmod(_dst_preview, 0o644)
+            shutil.copy2(preview_js, _dst_preview)
+            os.chmod(_dst_preview, 0o644)
         else:
             print("[warn] 未找到 scripts/preview.js，浏览器预览不可用"
                   "（渲染不受影响）", file=sys.stderr)
@@ -1837,7 +1779,9 @@ def main():
         vertical_path = f"{root}.vertical{ext or '.html'}"
         _render_one("landscape", args.width, args.height, args.output)
         print()
-        _render_one("vertical", 1080, 1920, vertical_path)
+        # 竖屏版固定 3:4（1080x1440）；文件名沿用 .vertical 后缀
+        # （"竖屏版"含义，历史契约不变）
+        _render_one("portrait", 1080, 1440, vertical_path)
     else:
         _render_one(args.aspect, args.width, args.height, args.output)
 

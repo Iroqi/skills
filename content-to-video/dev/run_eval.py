@@ -328,12 +328,24 @@ def check_image_integrity_validation():
         images_json2 = os.path.join(td, "images_corrupt.json")
         with open(images_json2, "w", encoding="utf-8") as f:
             json.dump({"news1": {"src": "images/news1.png"}}, f)
+        # 损坏探测靠 PIL（gen_hyperframes 无 Pillow 时降级为 warn + exit 0，
+        # 那是设计好的降级不是回归）——本解释器没有 Pillow 就 SKIP 这两条
+        try:
+            from PIL import Image as _pil_probe  # noqa: F401
+            _has_pil = True
+        except ImportError:
+            _has_pil = False
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
                              "-m", manifest_path, "-o", html_path, "--images", images_json2],
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
-        check("损坏图片：退出码非 0", r.returncode != 0)
-        check("损坏图片：报错信息标明「损坏/无法解码」",
-              "损坏" in r.stderr or "无法解码" in r.stderr, r.stderr[-300:])
+        if _has_pil:
+            check("损坏图片：退出码非 0", r.returncode != 0)
+            check("损坏图片：报错信息标明「损坏/无法解码」",
+                  "损坏" in r.stderr or "无法解码" in r.stderr, r.stderr[-300:])
+        else:
+            skip("损坏图片：退出码非 0（连同类目「报错信息标明」）",
+                 "本解释器无 Pillow，gen_hyperframes 按设计降级为 warn，"
+                 "损坏探测无从谈起（装 Pillow 后自动恢复）")
 
         # (c) 正常对照组：合法的最小 PNG 应该正常通过、生成 HTML
         try:
@@ -385,19 +397,30 @@ def check_run_parallel_orchestration():
             with open(src_path, "w", encoding="utf-8") as f:
                 json.dump(src, f, ensure_ascii=False)
 
-            # (a) 真并发：fake_pipeline 睡 1.2s，fake_search 睡 0.8s。
-            # 顺序执行约 2.0s，并行执行约 max(1.2,0.8)=1.2s。
+            # (a) 真并发：fake_pipeline 睡 1.8s，fake_search 睡 1.0s。
+            # 顺序执行约 2.8s，并行执行约 max(1.8,1.0)=1.8s。sleep 取大些
+            # 是为了让判定窗口远离机器抖动（门控里 selftest 刚跑完、机器
+            # 忙时 ±0.3s 很常见——曾用 1.2/0.8 窗口 1.8s 出过假红）。
             run_mod._script = lambda name: {
                 "pipeline.py": fake_pipeline,
                 "search_images.py": fake_search,
             }.get(name, os.path.join(SCRIPTS_DIR, name))
             out_dir = os.path.join(td, "audio_output")
             sys.argv = ["run.py", "--source", src_path, "-o", out_dir, "--until", "images"]
-            t0 = _time.time()
-            run_mod.main()
-            elapsed = _time.time() - t0
+            # 墙钟计时对机器负载敏感（门控里 selftest 刚跑完，Windows
+            # Defender 对新建临时文件的扫描会让子进程 spawn 慢 0.5s+，
+            # 曾在 check.py 上下文稳定假红、单跑全绿）——墙钟类断言重试
+            # 3 次取任一通过，判定窗口仍是"并行远小于顺序"的宽区间。
+            elapsed = None
+            for _attempt in range(3):
+                t0 = _time.time()
+                run_mod.main()
+                elapsed = _time.time() - t0
+                if elapsed < 2.3:
+                    break
+                _time.sleep(0.5)
             check("TTS+配图真并行（耗时接近较慢一步，而非两步相加）",
-                  elapsed < 1.8, f"实际耗时 {elapsed:.2f}s（顺序应约 2.0s，并行应约 1.2s）")
+                  elapsed < 2.3, f"实际耗时 {elapsed:.2f}s（顺序应约 2.8s，并行应约 1.8s，已重试 3 次）")
 
         # (b) 失败传播：TTS 假脚本以退出码 7 失败，run.py 应该原样传播退出码
         with tempfile.TemporaryDirectory() as td2:
@@ -423,7 +446,7 @@ def check_run_parallel_orchestration():
 FAKE_PIPELINE_SRC = '''import sys, time, os, json
 out = sys.argv[sys.argv.index("-o") + 1]
 os.makedirs(out, exist_ok=True)
-time.sleep(1.2)
+time.sleep(1.8)
 # fixture 必须满足 timing_manifest 契约（顶层 sentences 非空、每段
 # sentences 非空、句子四字段齐全）——run.py 的 _image_coverage 走
 # load_timing_manifest 校验，空列表会被当成坏产物拒收。
@@ -436,7 +459,7 @@ with open(os.path.join(out, "timing_manifest.json"), "w") as f:
 FAKE_SEARCH_IMAGES_SRC = '''import sys, time, os, json
 out = sys.argv[sys.argv.index("-o") + 1]
 os.makedirs(out, exist_ok=True)
-time.sleep(0.8)
+time.sleep(1.0)
 with open(os.path.join(out, "..", "images.json"), "w") as f:
     json.dump({"news1": {"src": "images/news1.png"}}, f)
 '''

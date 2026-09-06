@@ -14,19 +14,24 @@
         "leftWithBadge": 205,
         "leftWithoutBadge": 0,
         "topNews": 80,
-        "topOther": "16%",
+        "topOther": "10%",
         "fontSizeNews": 84,
         "fontSizeNewsImage": 72,
         "fontSizeOther": 106,
-        "padding": "0 100px"
+        "padding": "0 100px",
+        "rightInset": 110
       },
       "body": {
-        "fontSize": 44,
+        "fontSize": 38,
         "marginTop": 24,
         "padding": "24px 30px",
         "lineHeight": 1.55,
-        "maxWidth": 870,
-        "top": 368
+        "maxWidth": 910,
+        "top": 368,
+        "leftMargin": 50,
+        "sideGap": 25,
+        "titleGap": 50,
+        "card": true
       },
       "tagline": {
         "fontSize": 44,
@@ -35,10 +40,10 @@
         "indent": 24
       },
       "image": {
-        "width": 860,
-        "height": 700,
-        "top": 550,
-        "right": 50,
+        "width": 910,
+        "height": 644,
+        "top": 540,
+        "right": 25,
         "glow": 40
       },
       "subtitle": {
@@ -55,12 +60,15 @@
         "indentLeft": 140,
         "minFont": 32,
         "shrinkThreshold": 6,
-        "shrinkMax": 8
+        "shrinkMax": 8,
+        "itemGap": 14,
+        "maxItems": 7
       },
       "chip": {
         "fontSize": 38,
         "padding": "14px 28px",
-        "marginTop": 96
+        "marginTop": 96,
+        "gap": 16
       },
       "progressBar": {
         "height": 4
@@ -73,6 +81,14 @@
       }
     },
     "vertical": {
+      "segCard": {
+        "padding": "100px 50px 80px"
+      },
+      "verse": {
+        "windowHeight": 300,
+        "clipPad": 60,
+        "linePad": 5
+      },
       "badge": {
         "top": 60,
         "left": 80,
@@ -87,14 +103,16 @@
         "fontSizeNews": 76,
         "fontSizeNewsImage": 72,
         "fontSizeOther": 88,
-        "padding": "60px 80px"
+        "padding": "60px 80px",
+        "rightInset": 60
       },
       "body": {
         "fontSize": 38,
         "marginTop": 24,
         "padding": "24px 28px",
         "lineHeight": 1.55,
-        "maxWidth": 760
+        "maxWidth": 760,
+        "card": true
       },
       "tagline": {
         "fontSize": 36,
@@ -104,7 +122,10 @@
         "width": 980,
         "height": 980,
         "top": "auto",
-        "centerHorizontal": true
+        "centerHorizontal": true,
+        "aspect": "4/3",
+        "marginTop": 48,
+        "borderRadius": 16
       },
       "subtitle": {
         "height": 216,
@@ -121,12 +142,15 @@
         "minFont": 32,
         "shrinkThreshold": 8,
         "shrinkMax": 8,
-        "lineHeight": 1.34
+        "lineHeight": 1.34,
+        "itemGap": 14,
+        "maxItems": 7
       },
       "chip": {
         "fontSize": 34,
         "padding": "12px 24px",
-        "marginTop": 84
+        "marginTop": 84,
+        "gap": 16
       },
       "progressBar": {
         "height": 4
@@ -173,9 +197,6 @@
     "glowBreath": {
       "period": 1.6,
       "min": 0.85
-    },
-    "kenBurns": {
-      "scale": 1.05
     },
     "numPop": {
       "duration": 0.18,

@@ -18,9 +18,8 @@
   --until {tts,images,html,render}   跑到该步骤为止（用于调试）
   --no-verify         渲染后不跑 verify_render
   --no-resume         TTS 不用 --resume（默认启用）
-  --aspect            画幅 landscape/vertical/portrait/both（默认 landscape）
-  --sub-mode          字幕/内容呈现模式 verse/bar（默认按画幅：横屏 bar、竖屏 verse；
-                      显式传值强制该模式）
+  --aspect            画幅 landscape/portrait/both（默认 landscape；portrait=1080x1440 竖屏 3:4）。
+                      字幕/内容呈现模式固定按画幅绑定：横屏 bar、竖屏 verse（无模式选项）
   --theme             主题（默认 cream；可选值见 config/theme_registry.json，目前含 cream/dark/tech/alert）
   --fps               输出帧率（默认 24，官方支持 24/30/60）
   --quality           渲染质量 draft/standard/high（默认 standard）
@@ -34,14 +33,12 @@
   --loudness          响度归一化 LUFS（透传给 pipeline；默认不做归一化，
                       开启后成片音频为 combined_loud.wav）
   --dry-run           只跑 pipeline --dry-run（不写任何文件）
-  --no-trace          本次不落 Raw Layer 执行轨迹（也可设 CTV_TRACE=0）
 
 超时相关环境变量（默认够用，长稿件/慢机器才需要调）：
   CTV_CHECK_TIMEOUT       check --snapshots 的墙钟上限秒数（默认 300）
   CTV_PARALLEL_TIMEOUT    TTS+配图并行阶段的整体上限秒数（默认 3600）
 """
 import argparse
-import atexit
 import hashlib
 import json
 import math
@@ -63,15 +60,6 @@ from _voices import list_voice_ids  # noqa: E402  --voice-id choices 与音色�
 from _audio import validate_speed  # noqa: E402  坏语速 fail-fast
 from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
 
-# ── Raw Layer（WikiSkill 三层架构的执行证据层）──────────────────────
-# 每次实跑在收尾处旁路写一条不可变轨迹，落 ~/.config/ai-video/traces/，
-# 供 dev/wiki_maintain.py 蒸馏成 dev/wiki/patterns/ 下的经验。
-# 这是"旁路观测"：导入失败一律降级为空操作，绝不能因此搞挂一次视频制作。
-try:
-    from _trace import build_record, write_record
-except Exception:  # pragma: no cover - 缺文件时静默降级
-    build_record = write_record = None
-
 # ── 制作报告：一次 run.py 跑完后，各步骤耗时/配图情况/跳过了什么散落在各
 # 步骤自己的 stdout 里，人工翻起来很累。这里不改变任何步骤本身的行为，只是
 # 在旁路记一份轻量流水账，跑完打印小结 + 写一份 production_report.json，
@@ -87,53 +75,6 @@ _DRY_RUN = False
 # 整个 run 的起始时刻：total_seconds 用真实墙钟，而不是把各步骤耗时直接
 # 相加（TTS 与配图并行时两步各记各的全程，相加会大于真实墙钟）。
 _RUN_T0 = None
-
-# ── 轨迹旁路（Raw Layer）状态 ──────────────────────────────────────
-# _RUN_OUTCOME 默认 "interrupted" 是故意的：正常收尾一定会显式置 "ok"，
-# 所以任何走到一半的退出（Ctrl-C、未捕获异常、被 kill）都会留下
-# interrupted——"半途而废"本身就是值得蒸馏的一类失败模式。
-_RUN_OUTCOME = "interrupted"
-# 是否落盘轨迹（main() 解析完 --no-trace/--dry-run 后决定）
-_TRACE_ENABLED = False
-# 落盘时要带的参数快照（main() 里赋值）
-_TRACE_ARGS = None
-_TRACE_FAILURE = None
-
-
-def _note_outcome(name, failure=None):
-    """各终结点登记本次结局；failure 为 {"stage","rc","stderr_tail"}。"""
-    global _RUN_OUTCOME, _TRACE_FAILURE
-    _RUN_OUTCOME = name
-    if failure:
-        _TRACE_FAILURE = failure
-
-
-def _emit_trace():
-    """atexit 钩子：把本次 run 落成一条轨迹。任何异常都必须吞掉。
-
-    用 atexit 而不是在每个 sys.exit 前手写调用，是因为 run.py 有 6 处以上
-    的提前退出点（--until 三种、缺图 exit 2、步骤失败、Ctrl-C……），逐个
-    挂钩子必然漏；atexit 对 sys.exit 与未捕获异常同样触发，只有 SIGKILL
-    与 os._exit 抓不到——这两种情况下也没法指望拿到有用信息。
-    """
-    if not _TRACE_ENABLED or build_record is None:
-        return
-    try:
-        a = _TRACE_ARGS or {}
-        rec = build_record(
-            outcome=_RUN_OUTCOME,
-            params=a.get("params") or {},
-            stages=_REPORT.get("steps") or [],
-            skipped=_REPORT.get("skipped") or [],
-            images=_REPORT.get("images"),
-            failure=_TRACE_FAILURE,
-            total_seconds=_total_seconds(),
-            project_path=a.get("project"),
-            skill_dir=SKILL_DIR,
-        )
-        write_record(rec)
-    except Exception:
-        pass
 
 
 def _total_seconds():
@@ -311,8 +252,6 @@ def _run(cmd, cwd=None, step_name=None, timeout=None):
                 {"name": step_name, "seconds": round(time.time() - t0, 1),
                  "ok": False, "timeout": timeout})
             _write_report(_report_path())
-            _note_outcome("step_failed", {"stage": step_name, "rc": "timeout",
-                                          "stderr_tail": f"timeout={timeout}s"})
         print(f"[run] 步骤超时（>{timeout}s）：{' '.join(resolved)}\n"
               "      已尝试收掉残留进程。若反复超时，可加 --no-check 跳过"
               "快照 QA（HTML 未变时下次会自动跳过），或单独复现该命令看"
@@ -323,11 +262,6 @@ def _run(cmd, cwd=None, step_name=None, timeout=None):
             _REPORT["steps"].append(
                 {"name": step_name, "seconds": round(time.time() - t0, 1), "ok": False})
             _write_report(_report_path())
-            _note_outcome("step_failed", {
-                "stage": step_name, "rc": e.returncode,
-                # 子进程 stderr 已经打到终端了，这里抓的是"命令本身"，
-                # 够定位"哪个环节"即可——正文不进轨迹。
-                "stderr_tail": "script=" + os.path.basename(str(resolved[-2]))})
         print(f"[run] 步骤失败（退出码 {e.returncode}）：{' '.join(resolved)}",
               file=sys.stderr)
         sys.exit(e.returncode or 1)
@@ -338,10 +272,6 @@ def _run(cmd, cwd=None, step_name=None, timeout=None):
             _REPORT["steps"].append(
                 {"name": step_name, "seconds": round(time.time() - t0, 1), "ok": False})
             _write_report(_report_path())
-            _note_outcome("step_failed", {
-                "stage": step_name, "rc": None,
-                "stderr_tail": "cannot launch %s: %s" % (
-                    os.path.basename(str(resolved[0])), e)})
         print(f"[run] 步骤失败（无法启动命令 {resolved[0]}）：{e}",
               file=sys.stderr)
         sys.exit(1)
@@ -492,19 +422,11 @@ def main():
     parser.add_argument("--no-verify", action="store_true", help="渲染后跳过校验")
     parser.add_argument("--no-resume", action="store_true", help="TTS 不用 --resume")
     parser.add_argument("--aspect", default="landscape",
-                        choices=["landscape", "vertical", "portrait", "both"],
-                        help="画幅：landscape=1920x1080 横屏（默认），"
-                             "vertical=1080x1920 竖屏，portrait=1080x1440 "
-                             "紧凑竖屏（3:4，抖音等平台全屏播放零裁切），"
-                             "both=横竖两版一次产出")
+                        choices=["landscape", "portrait", "both"],
+                        help="画幅：landscape=1920x1080 横屏 16:9（默认），"
+                             "portrait=1080x1440 竖屏 3:4（抖音等平台全屏"
+                             "播放零裁切），both=横竖两版一次产出")
     parser.add_argument("--theme", default="cream", choices=list_theme_names())
-    parser.add_argument("--sub-mode", default=None,
-                        choices=["verse", "bar"],
-                        help="字幕/内容呈现模式（透传给 gen_hyperframes.py），"
-                             "默认按画幅取：横屏 bar（经典底部字幕条 + 正文"
-                             "要点卡片）、竖屏家族 verse（歌词式句子流，竖屏"
-                             "唯一模式——bar 会报错）。横屏显式传 verse = "
-                             "bar 布局 + 正文卡位置换滚动句子流")
     parser.add_argument("--fps", type=int, default=24, choices=[24, 30, 60],
                         help="输出帧率（默认 24；Hyperframes 官方支持 24/30/60，"
                              "非法值直通到渲染端只会以更隐晦的报错失败）")
@@ -535,43 +457,14 @@ def main():
                         help="对最终音频做响度归一化（LUFS，透传给 pipeline.py "
                              "--loudness）。平台有响度要求时用（如 -16）；"
                              "默认不做归一化。开启后成片音频为 combined_loud.wav")
-    parser.add_argument("--no-trace", action="store_true",
-                        help="本次不落 Raw Layer 执行轨迹（轨迹默认写在"
-                             " ~/.config/ai-video/traces/，只用于维护期蒸馏"
-                             "经验，不参与本次制作；也可设 CTV_TRACE=0）")
     args = parser.parse_args()
     _DRY_RUN = args.dry_run
-
-    # 轨迹旁路：非 dry-run 且未显式关闭时才启用。atexit 注册一次即可覆盖
-    # 全部退出路径（含步骤失败与 Ctrl-C）。
-    global _TRACE_ENABLED
-    _TRACE_ENABLED = (not args.dry_run) and (not args.no_trace) \
-        and (write_record is not None)
-    if _TRACE_ENABLED:
-        atexit.register(_emit_trace)
 
     if args.speed is not None:
         try:
             validate_speed(args.speed)
         except ValueError as e:
             parser.error(str(e))
-
-    # sub_mode 默认按画幅解析（与 gen_hyperframes.py 的函数级解析同规则）。
-    # 单画幅在这里先解析成显式值：制作报告 params 与 --sub-mode 透传都记
-    # 解析后的结果，check_series 的 drift 对比看到的是实际生效的模式。
-    # --aspect both 保持 None 透传——单值解析会把两画幅都强制成同一模式
-    # （横屏也变 verse），透传则由 gen_hyperframes 按画幅各自解析
-    # （横屏 bar + 竖屏 verse）；报告 params 记 None，check_series 按
-    # "默认值跳过不比" 处理（与 speed/voice_id 同语义）。
-    # 竖屏家族（vertical/portrait）只有 verse：显式 bar 直接报错（both
-    # 也不行——竖屏版会失败）。
-    if args.sub_mode == "bar" and args.aspect != "landscape":
-        parser.error(
-            f"--aspect {args.aspect} 不支持 --sub-mode bar：竖屏家族只有 "
-            "verse（歌词式句子流），bar 的底部字幕条 + 正文卡在竖屏高度内"
-            "放不下。如需 bar 形态请用 --aspect landscape。")
-    if args.sub_mode is None and args.aspect != "both":
-        args.sub_mode = ("bar" if args.aspect == "landscape" else "verse")
 
     out = os.path.abspath(args.output)
     project = os.path.abspath(args.project) if args.project else \
@@ -590,26 +483,11 @@ def main():
     _REPORT["params"] = {
         "theme": args.theme,
         "aspect": args.aspect,
-        "sub_mode": args.sub_mode,
         "fps": args.fps,
         "quality": args.quality,
         "speed": args.speed,
         "voice_id": args.voice_id,
         "loudness": args.loudness,
-    }
-
-    # 轨迹参数比报告 params 更宽：workers/gpu/--until/复用开关这些"环境敏感
-    # 旋钮"不进制作报告（check_series 只比跨集一致性），但恰恰是蒸馏失败模式
-    # 时最需要的维度——"workers 6 在 8G 内存的机器上崩"这类结论只能靠它得出。
-    global _TRACE_ARGS
-    _TRACE_ARGS = {
-        "params": dict(_REPORT["params"], workers=args.workers,
-                       gpu=bool(args.gpu), no_images=bool(args.no_images),
-                       until=args.until, reuse_render=bool(args.reuse_render),
-                       no_resume=bool(args.no_resume),
-                       no_verify=bool(args.no_verify),
-                       no_check=bool(args.no_check)),
-        "project": project,
     }
 
     # ── 第 3 步：TTS ──────────────────────────────────────────────
@@ -681,7 +559,6 @@ def main():
                         _try_kill(_p)
                     except Exception:
                         pass
-            _note_outcome("interrupted")
             # 130 是 "被 SIGINT 终止" 的惯例退出码；Windows 上 sys.exit
             # 传负数会被 shell 显示成 241，130 才是可读的。
             sys.exit(130)
@@ -718,9 +595,6 @@ def main():
                     {"name": "配图搜索（与 TTS 并行）",
                      "seconds": round(images_elapsed, 1), "ok": images_ret == 0})
                 _write_report(_report_path())
-                _note_outcome("step_failed", {"stage": "+".join(_stuck),
-                                              "rc": "timeout",
-                                              "stderr_tail": f"timeout={PARALLEL_TIMEOUT}s"})
                 print(f"[run] 并行阶段超时（>{PARALLEL_TIMEOUT}s），"
                       f"仍未结束：{'、'.join(_stuck)}。已收掉子进程。\n"
                       f"      稿件很长时可用环境变量 CTV_PARALLEL_TIMEOUT "
@@ -761,9 +635,6 @@ def main():
         if fail_rc is not None:
             _write_report(_report_path())
             _stage = ("TTS" if tts_ret not in (0, None) else "配图搜索")
-            _note_outcome("step_failed", {
-                "stage": _stage, "rc": fail_rc,
-                "stderr_tail": "script=" + os.path.basename(str(fail_cmd[-2]))})
             print(f"[run] 步骤失败（退出码 {fail_rc}）：{' '.join(fail_cmd)}",
                   file=sys.stderr)
             sys.exit(_norm_rc(fail_rc))
@@ -799,7 +670,6 @@ def main():
     if args.dry_run or args.until == "tts":
         if args.until == "tts":
             _REPORT["skipped"].append("html/render（--until tts）")
-        _note_outcome("ok")
         # dry-run 承诺"不写任何文件"：_write_report 内部短路不落盘，只打
         # 印摘要（非 dry-run 的 --until tts 仍是写报告 + 打印）。
         _write_report(_report_path())
@@ -825,7 +695,6 @@ def main():
     # 劫持就和"要渲染到底但缺图"混成了同一种失败。
     if args.until == "images":
         _REPORT["skipped"].append("html/render（--until images）")
-        _note_outcome("ok")
         _write_report(_report_path())
         _print_report_summary()
         return
@@ -884,10 +753,6 @@ def main():
                   "写好该段映射后重跑本命令（方式 B/C/D 均不依赖 STEFUN_API_KEY）。",
                   file=sys.stderr)
         _write_report(_report_path())
-        _note_outcome("missing_images", {
-            "stage": "配图", "rc": 2,
-            "stderr_tail": "missing=%d total=%s" % (
-                len(missing), (_REPORT.get("images") or {}).get("total"))})
         sys.exit(2)
 
     # （--until images 的提前返回已上移到缺图拦截之前：配图搜索完成即
@@ -897,10 +762,6 @@ def main():
     html_cmd = [sys.executable, _script("gen_hyperframes.py"),
                 "-m", manifest, "-o", os.path.join(project, "index.html"),
                 "--aspect", args.aspect, "--theme", args.theme]
-    if args.sub_mode:
-        # None（--aspect both 未显式指定）不传该旗标：gen_hyperframes
-        # 按画幅各自解析默认模式
-        html_cmd += ["--sub-mode", args.sub_mode]
     if has_images:
         html_cmd += ["--images", images_json]
     _run(html_cmd, step_name="生成 HTML")
@@ -912,7 +773,6 @@ def main():
 
     if args.until == "html":
         _REPORT["skipped"].append("check/render（--until html）")
-        _note_outcome("ok")
         _write_report(_report_path())
         _print_report_summary()
         return
@@ -1052,13 +912,12 @@ def main():
             (os.path.join(project, "index.html"),
              os.path.join(project, "out.mp4"), "横屏", "1920x1080"),
             (os.path.join(project, "index.vertical.html"),
-             os.path.join(project, "out.vertical.mp4"), "竖屏", "1080x1920"),
+             os.path.join(project, "out.vertical.mp4"), "竖屏", "1080x1440"),
         ]
-    elif args.aspect in ("vertical", "portrait"):
-        # 竖屏家族单画幅：vertical=1080x1920，portrait=1080x1440（3:4）
-        _vh = "1080x1440" if args.aspect == "portrait" else "1080x1920"
+    elif args.aspect == "portrait":
+        # 竖屏单画幅：固定 1080x1440（3:4）
         render_targets = [(os.path.join(project, "index.html"),
-                           os.path.join(project, "out.mp4"), "", _vh)]
+                           os.path.join(project, "out.mp4"), "", "1080x1440")]
     else:
         render_targets = [(os.path.join(project, "index.html"),
                            os.path.join(project, "out.mp4"), "", "1920x1080")]
@@ -1110,7 +969,7 @@ def main():
 
     # ── 第 5 步 d：校验成片 ───────────────────────────────────────
     if not args.no_verify:
-        # 画幅/帧率按渲染目标传给 verify_render：竖屏 1080x1920、横屏
+        # 画幅/帧率按渲染目标传给 verify_render：竖屏 1080x1440、横屏
         # 1920x1080，both 时两个成片各自对应。校验通过后写复用缓存
         # （--reuse-render 复用路径的缓存已在上面提前写回，这里重复写同值无害）
         for _, out_mp4, label, expect_size in render_targets:
@@ -1128,7 +987,6 @@ def main():
         if args.reuse_render:
             print("[warn] --reuse-render 依赖校验把关，与 --no-verify 同用会"
                   "失去坏成片检测——本次渲染结果未写复用缓存", file=sys.stderr)
-    _note_outcome("ok")
     print("\n[run] 完成。成片：", "、".join(final_mp4s), flush=True)
     _write_report(_report_path())
     _print_report_summary()
