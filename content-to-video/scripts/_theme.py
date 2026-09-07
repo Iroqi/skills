@@ -45,7 +45,7 @@ def get_theme_colors(theme):
     影响背景渐变、网格线、文字颜色与 body 背景色；每段 accent 彩色不受影响。
 
     Args:
-        theme: 主题名，取值见 list_theme_names()（当前为 cream/dark/tech/alert）
+        theme: 主题名，取值见 list_theme_names()（当前为 cream/dark）
 
     Returns:
         dict: 包含 bg_gradient, grid_color, text_color, body_bg, body_text,

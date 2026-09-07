@@ -20,7 +20,7 @@
   --no-resume         TTS 不用 --resume（默认启用）
   --aspect            画幅 landscape/portrait/both（默认 landscape；portrait=1080x1440 竖屏 3:4）。
                       字幕/内容呈现模式固定按画幅绑定：横屏 bar、竖屏 verse（无模式选项）
-  --theme             主题（默认 cream；可选值见 config/theme_registry.json，目前含 cream/dark/tech/alert）
+  --theme             主题（默认 cream；可选值见 config/theme_registry.json，目前为 cream/dark）
   --fps               输出帧率（默认 24，官方支持 24/30/60）
   --quality           渲染质量 draft/standard/high（默认 standard）
   --workers           渲染抓帧 worker 数（默认 6；2026-08 实测 6 比 4 快约 10%）
@@ -56,6 +56,7 @@ SKILL_DIR = os.path.dirname(SCRIPTS_DIR)
 sys.path.insert(0, SCRIPTS_DIR)
 from render_watch import resolve_command, _try_kill  # noqa: E402  复用 npx/.cmd 的 Windows 解析与进程树收尾
 from _theme import list_theme_names  # noqa: E402  --theme choices 与 registry.json 单一数据源同步
+from _template import get_mode_preset  # noqa: E402  竖屏开场封面图义务与 gen 共读同一模式预设（template.json modes）
 from _voices import list_voice_ids  # noqa: E402  --voice-id choices 与音色注册表单一数据源同步
 from _contracts import validate_speed  # noqa: E402  坏语速 fail-fast（规则单一来源）
 from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强制 UTF-8
@@ -372,9 +373,17 @@ def _render_cache_key(html_path, manifest_path, args):
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def _image_coverage(manifest_path, images_json):
+def _image_coverage(manifest_path, images_json, vertical=False):
     """返回 (all_sids, missing_sids)：manifest 中 news/seg 段落的全部 sid，
     以及其中 images.json 里还没配图的那些。
+
+    vertical=True（竖屏 portrait/both 制作传）：竖屏且模式预设
+    verticalOpeningCover=true（template.json modes 的 flow 预设；1.5.69
+    起与 gen_hyperframes 共读同一预设，不再各自硬编码 flow 判断）时
+    开场封面图必配——manifest 含 opening 段时把结构性键 "opening" 一并
+    纳入统计，images.json 没有 "opening" 键就会出现在 missing 里走缺图
+    拦截；章节预设该键为 false（开场保持目录，无配图义务）。closing
+    任何画幅都可选，横屏不传该参数（开场配图仍可选）。
 
     之前 run.py 里同时存在两份"怎么从 manifest 里挑出 news/seg 段落 id"的
     逻辑——一份在这个函数内部，一份在 main() 里为了统计总数又重新拼了一遍
@@ -391,6 +400,15 @@ def _image_coverage(manifest_path, images_json):
     manifest = load_timing_manifest(manifest_path)
     sids = [seg.get("id", "") for seg in manifest.get("segments", [])
             if is_content_sid(seg.get("id"))]
+    # 开场封面图义务只在「竖屏 + 预设 verticalOpeningCover=true（flow
+    # 预设）+ manifest 真有 opening 段」时成立：预设由 manifest 顶层 flow
+    # 布尔选定（segments_source.json 透传）；自定义手写 manifest 可能没有
+    # 开场段——没有页面就没有配图义务；章节预设开场保持目录（agenda 是
+    # 画面主体），无配图义务（用户指定，1.5.67）
+    if (vertical and get_mode_preset(manifest)["verticalOpeningCover"]
+            and any(seg.get("id") == "opening"
+                    for seg in manifest.get("segments", []))):
+        sids = sids + ["opening"]
     if not sids:
         return [], []
     if not os.path.isfile(images_json):
@@ -484,7 +502,7 @@ def main():
     _REPORT["output"] = out
     _REPORT["project"] = project
     _REPORT["started_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-    # 制作参数进报告——check_series.py 靠它对比各集实际用的
+    # 制作参数进报告——series.py check 靠它对比各集实际用的
     # theme/voice/speed 等，跨集漂移不用翻命令行历史就能发现。
     # speed/voice_id 为 None 表示用默认值，检查侧跳过不比。
     _REPORT["params"] = {
@@ -693,7 +711,9 @@ def main():
     if want_images and (has_key or has_images):
         # "不要瞎配图"：缺图的段落需要当前对话模型审阅候选并 --pick，
         # 或改用 ImageGen 生图。
-        all_sids, missing = _image_coverage(manifest, images_json)
+        all_sids, missing = _image_coverage(
+            manifest, images_json,
+            vertical=args.aspect in ("portrait", "both"))
         _REPORT["images"] = {
             "total": len(all_sids), "matched": len(all_sids) - len(missing),
             "missing": len(missing)}
@@ -708,14 +728,20 @@ def main():
         return
 
     if want_images and missing:
+        # 竖屏 flow 预设开场封面图（verticalOpeningCover=true）："opening"
+        # 不走搜图候选审阅（search_images 只搜内容段落），拆出来单独指路——
+        # 混进 _split_missing_by_candidates 会落进 no_candidate 分支，被误
+        # 读成"按 --search-sids 路由给方式 B/C/D 的内容段落"。
+        oc_missing = "opening" in missing
+        content_missing = [s for s in missing if s != "opening"]
+        candidates_dir = os.path.join(project, "images")
         if has_key:
             # 纯独立审阅：run.py 走到缺图分支时，不再生成拼图，而是把每个缺图
             # 段落的候选原图全路径直接列在提示里，让 agent 逐张、全分辨率 Read
             # 判断图↔题贴合度（缩略图/拼图会漏掉水印、角标、图内烧字等细节）。
-            candidates_dir = os.path.join(project, "images")
             cand_json = os.path.join(candidates_dir, "candidates.json")
             pending_pick, no_candidate, review_lines = _split_missing_by_candidates(
-                missing, cand_json, candidates_dir)
+                content_missing, cand_json, candidates_dir)
             if not review_lines:
                 # 兜底：candidates.json 缺失时直接枚举 images 目录里的候选文件
                 import glob as _glob
@@ -724,7 +750,8 @@ def main():
                     review_lines.append("  · 候选原图文件："
                                         + "  ".join(cands))
 
-            msg = ("[run] 以下段落还没有定稿配图：" + ", ".join(missing) + "。\n")
+            msg = ("[run] 以下段落还没有定稿配图："
+                   + ", ".join(content_missing) + "。\n") if content_missing else ""
 
             if pending_pick:
                 msg += ("\n【有候选 · 待你审阅定稿】" + "、".join(pending_pick) + "\n"
@@ -750,16 +777,33 @@ def main():
                         "  请按第 4 步用 ImageGen 生图（方式 B）或 gen_charts.py 图表（方式 C）补图："
                         f"图片放进 {candidates_dir}，并在 {images_json} 写好该段映射后重跑本命令。\n")
 
-            msg += "完成后重跑本命令。"
+            if oc_missing:
+                msg += ("\n[run] 竖屏开场页缺少封面图（当前叙事模式默认必配，"
+                        "无需手动开启）：开场图不走搜图，请用 ImageGen 生成一张"
+                        "点题封面图（风格与内容段配图一致），放进 "
+                        f"{candidates_dir}，并在 {images_json} 写 "
+                        '"opening": {"src": "images/opening.png"}。\n')
+            if content_missing:
+                msg += "完成后重跑本命令。"
             print(msg, file=sys.stderr)
         else:
             # 无 Key 的手动补图流程（方式 B/C/D）没有搜图候选可审阅，拦截
             # 提示直接指路生图/图表，不引导去跑需要 Key 的 search_images。
-            print("[run] 以下段落还没有定稿配图：" + ", ".join(missing) + "。\n"
-                  "请按第 4 步用 ImageGen 生图（方式 B）或图表（方式 C）补图："
-                  f"图片放进 {os.path.join(project, 'images')}，并在 {images_json} "
-                  "写好该段映射后重跑本命令（方式 B/C/D 均不依赖 STEFUN_API_KEY）。",
-                  file=sys.stderr)
+            if content_missing:
+                print("[run] 以下段落还没有定稿配图："
+                      + ", ".join(content_missing) + "。\n"
+                      "请按第 4 步用 ImageGen 生图（方式 B）或图表（方式 C）补图："
+                      f"图片放进 {candidates_dir}，并在 {images_json} "
+                      "写好该段映射后重跑本命令（方式 B/C/D 均不依赖 "
+                      "STEFUN_API_KEY）。",
+                      file=sys.stderr)
+            if oc_missing:
+                print("[run] 竖屏开场页缺少封面图（当前叙事模式默认必配，"
+                      "无需手动开启）：开场图不走搜图，请用 ImageGen 生成一张"
+                      "点题封面图（风格与内容段配图一致），放进 "
+                      f"{candidates_dir}，并在 {images_json} 写 "
+                      '"opening": {"src": "images/opening.png"} 后重跑本命令。',
+                      file=sys.stderr)
         _write_report(_report_path())
         sys.exit(2)
 

@@ -7,6 +7,8 @@
 import re
 import sys
 
+from _template import load_template
+
 
 def setup_stdio():
     """stdout/stderr 强制 UTF-8 输出（errors=replace），入口脚本 main() 第一行调用。
@@ -270,8 +272,9 @@ def split_subtitle_lines(text, max_chars=28, max_lines=3, hard_cap=40):
 def subtitle_params_for(aspect="landscape"):
     """按画幅给出字幕切分参数——单一权威来源。
 
-    片内字幕（gen_hyperframes.py）的切行参数唯一权威来源——只此一份，
-    不存在两处数值漂移的可能。
+    片内字幕（gen_hyperframes.py）与导出 SRT 共用同一份参数，保证逐条
+    对齐。数值定义在 config/template.json 顶级 subtitle 块（JSON 定义、
+    本函数只做画幅归一化与取数），改切行宽度只动模板文件。
 
     字幕/内容呈现模式固定按画幅绑定：横屏 bar、竖屏 verse（无用户
     选项），因此本函数只按 aspect 区分。
@@ -283,18 +286,10 @@ def subtitle_params_for(aspect="landscape"):
     # 的归一化语义一致），CLI/调用方传 "portrait" 也拿到竖屏切行参数。
     if aspect == "portrait":
         aspect = "vertical"
-    # 竖屏画面窄（1080 宽），每行只能放 ~22 字；横屏字幕条 maxWidth 900、
-    # 字号 ≈22 字时 870px/46px ≈28 字。
-    max_chars = 22 if aspect == "vertical" else 28
-    # 物理行硬上限：次要标点切不动时按此字符级硬切，保证 1 逻辑行 = 1
-    # 物理行，不二次换行（横屏 ~34 字/行、竖屏 ~22 字/行）。
-    hard_cap = 22 if aspect == "vertical" else 34
-    # bar（横屏唯一模式）每 cue ≤2 行（再多会盖住正文卡）；verse（竖屏
-    # 唯一模式）按整句渲染——内容是字幕本身，切行只影响 cue 数据不影响
-    # 视觉。
-    cue_max_lines = 99 if aspect == "vertical" else 2
-    return {"max_chars": max_chars,
-            "hard_cap": hard_cap, "cue_max_lines": cue_max_lines}
+    params = load_template()["subtitle"][aspect]
+    return {"max_chars": params["maxChars"],
+            "hard_cap": params["hardCap"],
+            "cue_max_lines": params["cueMaxLines"]}
 
 
 def split_subtitle_cues(text, max_chars=28, cue_max_lines=2, hard_cap=40):

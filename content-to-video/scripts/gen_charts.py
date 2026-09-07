@@ -67,10 +67,11 @@ from _script_utils import setup_stdio  # noqa: E402  重定向场景 stdout 强�
 
 SAFE_MARGIN_RATIO = 0.09  # 画布四周各留 9% 空白（排版呼吸感；contain 填充不裁边）
 
-# 画布 4:3（dpi=100 下 1200×900）：横屏图片槽 860×700（≈1.23:1）contain
-# 填充率约 92%（上下各 ~27px 模糊底）；竖屏方槽 980×980 约 75%、portrait
-# 4:3 槽 100%——4:3 与方式 B 的 landscape_4_3（1152×864）同一比例约定，
-# 是双画幅下的稳妥折中。
+# 画布 4:3（dpi=100 下 1200×900）：图框统一 √2:1（横竖屏一致，读模板
+# layout.*.image.aspect——横屏槽 910×644，竖屏槽宽 980+2×marginSide），
+# 主流素材比例里 4:3（≈1.33）最接近 √2（≈1.41），contain 填充率约 94%
+# （横屏两侧各 ~25px、竖屏 ~30px 侧隙）——与方式 B 的 landscape_4_3
+# （1152×864）同一比例约定（配图比例原则见 references/image_options.md）。
 FIGSIZE = (12, 9)
 
 # 图表固定用深色底，不跟随 --theme：这跟方式 B（ImageGen）的约定一致——配图

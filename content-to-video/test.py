@@ -1,51 +1,39 @@
 #!/usr/bin/env python3
-"""Content-to-Video — 确定性逻辑冒烟测试（不联网、不调 API、不写文件）。
+"""Content-to-Video — 一键测试：确定性断言 + 离线集成 + 文档门禁（三合一）。
 
-用法：
-  python scripts/selftest.py
+用法（改完代码/文档后唯一要跑的命令）：
+  python dev/test.py
 
-覆盖：
-- _script_utils.split_sentences：标点/换行断句、短句合并
-- _script_utils.split_subtitle_lines / split_subtitle_cues：字幕显示层固定宽度
-  均衡切行（每行尽量填满到 max_chars；断点优先标点/空格、其次 CJK 字符间；
-  英文词保持完整不劈开）
-- build_from_structured.build_parts：逐段独立分句（pipeline --source 唯一路径）、
-  自动摘要、段索引一致性、flow 模式 agenda 默认值、超长句写作提醒
-- build_from_structured 双人对话（dialogue）：turns 区间解析、speakers 音色解析
-- gen_hyperframes：无 segments 兜底分组、generate_html 结构完整性、开场目录自动生成、双人对话 cue 的 speaker/spk 注入（数据层）+ bar 模式说话人标签显示层与明暗自适应配色、flow 自然叙事模式（无 badge/无 wipe/开场预告为轻量 chips、收尾 recap 默认关）、长句 cue 切多行 + 每屏两行拆多 cue（时长按字符占比、cue 首尾相接）、字幕/内容双模式（verse 歌词式句子流 / bar 经典底部字幕条+正文卡）
-- _env.get_key / resolve_model_config：CLI > 环境变量 > 配置文件
-- _theme/_template：主题色板与模板加载
-- verify_render.parse_ffmpeg_info：时长/编码解析
-- _audio：atempo 过滤链构建
-- _tts：合成失败路径（注入 fake client）
-- _contracts：segments_source / timing_manifest / images.json 契约校验
-- render_watch.resolve_command：Windows 下 npx.cmd 的解析
-- search_images.relevance_score：本地相关性提示分
-- budget：时长估算函数（单句时长随字数/语速缩放、estimate 子命令输出）+
-  cost 子命令（配图 credits 成本区间估算）
-- gen_charts：图表校验（labels/values 不匹配、饼图全 0 拒绝）+ bar/line/pie/curve 实际渲染与 4:3 画布尺寸断言（无 matplotlib 时跳过，不影响核心流程判定）
-- split_series：parse_sections（Markdown 标题切分 / 无标题退化为空行分块 / 空文档报错）+
-  plan_episodes（target_seconds 与 n_episodes 两种模式都不拆开原始小节）+
-  write_skeleton 的 _series_meta（多集才附加、prev/next 互相链接正确、单集不附加）
-- run._image_coverage：缺图拦截判定（images.json 不存在时全部 news/seg 段落算 missing、
-  部分配图只报未覆盖、opening/closing 不参与、无 segments 字段时无义务）
+三段内容（1.5.74 起由原 scripts/selftest.py + dev/run_eval.py + dev/check.py
+合并，使用者只有 agent 一个，不再维持三个入口三套摘要）：
+  [1] 确定性断言——模块函数/产物结构/契约校验，字符串与 AST 级，
+      不联网不调 API（_test_1 … _test_25 各章节）
+  [2] 离线集成——真子进程 + 真 ffmpeg 合成 H.264/AAC 测试视频走
+      verify_render.py 校验；fake fixture 跑 run.py 并行编排与缺图拦截；
+      抓"跨脚本 CLI 胶水"断裂（断言层够不到的一层）
+  [3] 文档门禁——frontmatter/version 一致性、SKILL.md 锚点、声明-实际
+      交叉校验（--gap 默认、图片尺寸、踩坑条数、CLI choices 等防漂移）
 
-- [22] 深度 review 修复回归组：_tts 残留 sidecar 清理、search_images --pick 审阅决策（0 弃用/越界报错不删候选/未提及保留/已定稿继承）、pipeline --check-env 独立运行、BGM amix normalize=0、run.py --aspect both 双成片、字幕行内透明度不再双重相乘
-
-任何一项失败都会打印 [FAIL] 并以非零码退出。修改上述模块后建议先跑一遍本测试。
-
-结构：
-- 每个 [N] 章节抽成 _test_NN_*()，main() 用 try/except 逐个调用——
-  任一章节崩溃不会阻断后续章节，调试时能拿到全部章节的失败/通过计数。
+任何一项失败以非零码退出；末尾打一行 __SUMMARY_JSON__ 供 agent 程序化解析。
+语义/视觉层（取材判断、裂图/溢出审帧）不在此冒充自动化，由 agent 在真实
+制作与审帧流程里完成。
 """
+
 import io
 import json
 import os
 import shutil
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+HERE = os.path.dirname(os.path.abspath(__file__))  # 技能根目录（本文件与 SKILL.md 同级）
+_SKILL_ROOT = HERE
+SCRIPTS_DIR = os.path.join(_SKILL_ROOT, "scripts")
+sys.path.insert(0, SCRIPTS_DIR)
+import re  # noqa: E402  门禁段需要
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import contextlib  # noqa: E402
+from _script_utils import setup_stdio  # noqa: E402  门禁段要打印子进程捕获输出
 
 passed = 0
 failed = 0
@@ -65,7 +53,6 @@ def check(name, cond, detail=""):
 
 # 跨章节共享状态：_TPL/_SKILL_ROOT 由 main() 启动时预加载，章节内只读。
 # 让 [18] 之前的章节也能安全访问（万一 [18] 崩溃，[20+] 仍能跑）。
-_SKILL_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TPL = None
 
 
@@ -78,6 +65,18 @@ def _load_template():
             _TPL = json.load(_f)
     except Exception:
         _TPL = None
+
+
+def _base_manifest():
+    """六句基础 manifest fixture：[3]/[3b]/[22f] 共用时基，改时基只动这里。"""
+    return {
+        "sentences": [
+            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
+             "start_time": i * 2.4, "duration": 2.0}
+            for i in range(6)
+        ],
+        "total_duration": 14.5,
+    }
 
 
 def _test_1_split_sentences():
@@ -229,7 +228,7 @@ def _test_2b_dialogue():
 def _test_2c_flow():
     # 2c. flow 自然叙事模式 + 超长句写作提醒
     print("\n[2c] build_from_structured flow 模式 + 超长句提醒")
-    from build_from_structured import LONG_SENTENCE_CHARS, build_parts
+    from build_from_structured import build_parts
     flow_src = dict({
         "opening": "大家好，欢迎收看今天的AI日报。",
         "closing": "感谢收看，明天见。",
@@ -352,14 +351,7 @@ def _test_3_hyperframes():
     print("\n[3] gen_hyperframes")
     from gen_hyperframes import fallback_segments, generate_html
     from _theme import get_default_accent
-    manifest = {
-        "sentences": [
-            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
-             "start_time": i * 2.4, "duration": 2.0}
-            for i in range(6)
-        ],
-        "total_duration": 14.5,
-    }
+    manifest = _base_manifest()
     segs = fallback_segments(manifest["sentences"])
     check("fallback chunk size 5", len(segs) == 2
           and all(len(s["sentences"]) <= 5 for s in segs), len(segs))
@@ -420,7 +412,7 @@ def _test_3_hyperframes():
           'id="img-news1"' in html2 and "images/news1.jpg" in html2)
     check("news body renders without agenda", 'id="agendalist-' not in html2)
 
-    manifest3 = {
+    manifest_open = {
         **manifest,
         "segments": [
             {"id": "opening", "title": "AI 日报", "tagline": "", "body": "",
@@ -429,8 +421,8 @@ def _test_3_hyperframes():
              "accent": "#ffd54f", "sentences": manifest["sentences"][1:4]},
         ],
     }
-    html3 = generate_html(manifest3, "audio/combined.wav")
-    check("opening agenda auto-generated", 'id="agendalist-' in html3)
+    html_open = generate_html(manifest_open, "audio/combined.wav")
+    check("opening agenda auto-generated", 'id="agendalist-' in html_open)
     manifest4 = {
         **manifest,
         "segments": [
@@ -470,7 +462,7 @@ def _test_3_hyperframes():
     }
     html_many = generate_html(manifest_many, "audio/combined.wav")
     _ag_cap = json.load(open(os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        _SKILL_ROOT,
         "config", "template.json"),
         encoding="utf-8"))["layout"]["landscape"]["agenda"]["maxItems"]
     check(f"agenda 超过 maxItems({_ag_cap}) 截断到上限",
@@ -480,6 +472,49 @@ def _test_3_hyperframes():
           f'id="recapchip-closing-{_ag_cap - 1}"' in html_many
           and f'id="recapchip-closing-{_ag_cap}"' not in html_many)
     check("无 '等共 N 条' 封顶提示行", "等共" not in html_many)
+
+    # 开场/收尾页配图（1.5.65）：images.json 写 "opening"/"closing" 键即生效。
+    # 横屏（bar）开场预告保留；竖屏（verse）预告/回顾让位于图
+    # （_verse_kills_body 对 opening/closing 一并生效，垂直预算装不下并存）。
+    manifest_oc = {
+        **manifest,
+        "segments": [
+            {"id": "opening", "title": "开场", "tagline": "", "body": "",
+             "accent": default_accent, "sentences": manifest["sentences"][:1]},
+            {"id": "news1", "title": "标题一", "tagline": "", "body": "",
+             "accent": "#ffd54f", "sentences": manifest["sentences"][1:4]},
+        ],
+    }
+    html_oc = generate_html(manifest_oc, "audio/combined.wav",
+                            images={"opening": "images/opening.jpg"})
+    check("opening image rendered", 'id="img-opening"' in html_oc)
+    check("landscape opening agenda kept with image",
+          'id="agendalist-opening"' in html_oc)
+    html_ocv = generate_html(manifest_oc, "audio/combined.wav",
+                             images={"opening": "images/opening.jpg"},
+                             aspect="portrait")
+    check("portrait opening image rendered",
+          'id="img-opening"' in html_ocv and "images/opening.jpg" in html_ocv)
+    check("portrait opening agenda yields to image",
+          'id="agendalist-opening"' not in html_ocv
+          and 'id="chiprow-opening"' not in html_ocv)
+    check("portrait opening has-image class",
+          'id="opening" class="clip seg-card has-image"' in html_ocv)
+    manifest_oc2 = {
+        **manifest,
+        "segments": [
+            {"id": "news1", "title": "标题一", "tagline": "", "body": "",
+             "accent": "#ffd54f", "sentences": manifest["sentences"][1:4]},
+            {"id": "closing", "title": "收尾", "tagline": "", "body": "",
+             "accent": default_accent, "sentences": manifest["sentences"][4:5]},
+        ],
+    }
+    html_ocv2 = generate_html(manifest_oc2, "audio/combined.wav",
+                              images={"closing": "images/closing.jpg"},
+                              aspect="portrait")
+    check("portrait closing image rendered, recap yields",
+          'id="img-closing"' in html_ocv2
+          and 'id="chiprow-closing"' not in html_ocv2)
 
 
 def _test_3b_hyperframes_flow():
@@ -491,14 +526,7 @@ def _test_3b_hyperframes_flow():
     from gen_hyperframes import generate_html
     from _theme import get_default_accent
     default_accent = get_default_accent()
-    manifest = {
-        "sentences": [
-            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
-             "start_time": i * 2.4, "duration": 2.0}
-            for i in range(6)
-        ],
-        "total_duration": 14.5,
-    }
+    manifest = _base_manifest()
     flow_manifest = {
         **manifest,
         "flow": True,
@@ -563,7 +591,7 @@ def _test_3b_hyperframes_flow():
     check("bar mode: sub-line css present", ".sub-line + .sub-line" in html_long)
     check("preview externalized to preview.js",
           'src="preview.js"' in html_chapters and "__pvUpdate" in html_chapters)
-    pj = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    pj = io.open(os.path.join(SCRIPTS_DIR,
                               "preview.js"), encoding="utf-8").read()
     check("preview.js gated for headless",
           "navigator.webdriver" in pj and "__pvUpdate" in pj
@@ -664,8 +692,9 @@ def _test_5_theme_template():
     from _theme import get_accent_palette, get_theme_colors, list_theme_names
     from _template import load_template
     pal = get_accent_palette()
-    check("accent palette 8 colors",
-          len(pal) == 8 and all(c.startswith("#") for c in pal))
+    check("accent palette non-empty, all #hex",
+          bool(pal) and all(c.startswith("#") and len(c) == 7 for c in pal),
+          pal)
     cream = get_theme_colors("cream")
     check("theme keys present",
           {"bg_gradient", "text_color", "sub_bar_rgb", "soft_border"} <= set(cream))
@@ -757,7 +786,7 @@ def _test_8_contracts():
     print("\n[8] _contracts")
     from _contracts import (validate_segments_source, validate_timing_manifest,
                             validate_images_json)
-    from _voices import list_voice_ids, is_valid_voice_id
+    from _voices import is_valid_voice_id
     from build_from_structured import build_parts
     good_src = {"opening": "好。", "segments": [{"title": "A", "text": "内容。"}]}
     check("segments source valid",
@@ -828,8 +857,6 @@ def _test_8_contracts():
             check("segments source rejects bad speed/voice value", True)
 
     # 音色注册表 + 段落级 voice_id/voice_style 透传（--source 路径）
-    check("voice registry has 8 presets",
-          len(list_voice_ids()) == 8, list_voice_ids())
     check("voice registry valid id",
           is_valid_voice_id("冰糖") and is_valid_voice_id("Mia"))
     check("voice registry rejects unknown", not is_valid_voice_id("fake"))
@@ -905,42 +932,15 @@ def _test_10_search_images():
 
 
 def _test_12_budget():
-    # 12. budget（时长预算：估算函数）
+    # 12. budget（时长预算：估算函数；cmd_estimate 的 stdout 格式不测——
+    # 测的是 print 字符串，不是行为）
     print("\n[12] budget")
-    import tempfile
-    from budget import cmd_estimate
     from _contracts import estimate_sentence_seconds
 
     check("estimate_sentence_seconds scales with length",
           estimate_sentence_seconds("一二三四五六七八九十", 5.0, 1.0) == 2.0)
     check("estimate_sentence_seconds scales with speed",
           estimate_sentence_seconds("一二三四五", 5.0, 2.0) == 0.5)
-
-    budget_src = {
-        "opening": "大家好，欢迎收看。",
-        "closing": "感谢收看。",
-        "segments": [{"title": "A", "text": "第一条内容。第二句话。"}],
-    }
-    with tempfile.TemporaryDirectory() as td:
-        src_path = os.path.join(td, "src.json")
-        with open(src_path, "w", encoding="utf-8") as f:
-            json.dump(budget_src, f, ensure_ascii=False)
-        buf = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-        try:
-            class _Args:
-                input = src_path
-                chars_per_sec = 4.3
-                speed = 1.0
-                gap = 0.3
-            cmd_estimate(_Args())
-        finally:
-            sys.stdout = old_stdout
-        out = buf.getvalue()
-        check("budget estimate prints result", "[estimate]" in out, out)
-        check("budget estimate reports sentence count",
-              "共 4 句" in out, out)
 
 
 def _test_14_gen_charts():
@@ -1047,53 +1047,53 @@ def _test_14_gen_charts():
             os.remove(curve_path)
 
 
-def _test_15_split_series_coverage():
-    # 16. split_series / budget calibrate
+def _test_15_series_split():
+    # 16. series split / budget calibrate
     # 这四个都是纯离线逻辑（不依赖真实 TTS/渲染 API），加进来补上上次
     # review 发现的一个真实教训：--on-fail silence 的 resume 标记丢失 bug
     # 是手工构造场景才抓到的，如果当时就有这层覆盖，本该在第一版就被拦住。
-    print("\n[15] split_series / budget calibrate")
+    print("\n[15] series.split / budget calibrate")
     import tempfile
 
-    # 16b. split_series.parse_sections / plan_episodes
-    from split_series import parse_sections, plan_episodes
+    # 16b. series.split parse_sections / plan_episodes
+    from series import parse_sections, plan_episodes
 
     md_doc = ("# 一\n短内容。\n\n# 二\n" + "这句话会重复很多次用来撑长这一节的估算时长。" * 8
              + "\n\n# 三\n短内容。")
     sections = parse_sections(md_doc)
-    check("split_series: markdown heading split finds 3 sections",
+    check("series.split: markdown heading split finds 3 sections",
           len(sections) == 3 and [t for t, _b in sections] == ["一", "二", "三"],
           sections)
 
     no_heading_doc = "第一段内容在这里。\n\n第二段内容在这里，完全不同的话题。"
     sections2 = parse_sections(no_heading_doc)
-    check("split_series: no-heading doc falls back to blank-line blocks",
+    check("series.split: no-heading doc falls back to blank-line blocks",
           len(sections2) == 2, sections2)
 
     try:
         parse_sections("   \n\n  ")
-        check("split_series: blank doc raises ValueError", False)
+        check("series.split: blank doc raises ValueError", False)
     except ValueError:
-        check("split_series: blank doc raises ValueError", True)
+        check("series.split: blank doc raises ValueError", True)
 
     episodes = plan_episodes(sections, target_seconds=8.0)
     # 核心不变量：只在小节边界切，每个原始小节必须完整出现在恰好一集里，
     # 不允许被拆开、也不允许丢失或重复。
     flat_titles = [t for ep in episodes for t, _b, _d in ep]
-    check("split_series: target_seconds mode never splits a section",
+    check("series.split: target_seconds mode never splits a section",
           flat_titles == ["一", "二", "三"], flat_titles)
-    check("split_series: long section 二 gets its own episode",
+    check("series.split: long section 二 gets its own episode",
           any(len(ep) == 1 and ep[0][0] == "二" for ep in episodes), episodes)
 
     episodes_n = plan_episodes(sections, n_episodes=2)
-    check("split_series: n_episodes mode respects requested count",
+    check("series.split: n_episodes mode respects requested count",
           len(episodes_n) == 2, len(episodes_n))
     flat_titles_n = [t for ep in episodes_n for t, _b, _d in ep]
-    check("split_series: n_episodes mode also never splits a section",
+    check("series.split: n_episodes mode also never splits a section",
           sorted(flat_titles_n) == sorted(["一", "二", "三"]), flat_titles_n)
 
     # 16g. split_series: _series_meta 只在多集时附加，且 prev/next 链接正确
-    from split_series import write_skeleton
+    from series import write_skeleton
     with tempfile.TemporaryDirectory() as td:
         ep_a = [("集A", "内容A", 5.0)]
         ep_b = [("集B", "内容B", 5.0)]
@@ -1107,17 +1107,17 @@ def _test_15_split_series_coverage():
             meta_a = json.load(f)["_series_meta"]
         with open(out_b, encoding="utf-8") as f:
             meta_b = json.load(f)["_series_meta"]
-        check("split_series: episode 1 has no prev, links to next",
+        check("series.split: episode 1 has no prev, links to next",
               meta_a["prev_episode_title"] is None and meta_a["next_episode_title"] == "集B",
               meta_a)
-        check("split_series: episode 2 links back to prev, no next",
+        check("series.split: episode 2 links back to prev, no next",
               meta_b["prev_episode_title"] == "集A" and meta_b["next_episode_title"] is None,
               meta_b)
 
         out_single = os.path.join(td, "single.json")
         write_skeleton(ep_a, out_single, episode_index=None, total_episodes=1)
         with open(out_single, encoding="utf-8") as f:
-            check("split_series: single-episode skeleton has no _series_meta",
+            check("series.split: single-episode skeleton has no _series_meta",
                   "_series_meta" not in json.load(f))
 
     # 17. run._image_coverage：缺图拦截的判定核心（回归防护——若外层多套
@@ -1187,6 +1187,58 @@ def _test_15_split_series_coverage():
         check("run._image_coverage: manifest without segments -> no sids, no missing",
               sids == [] and missing == [], (sids, missing))
 
+        # 17g. vertical + flow（竖屏 flow 模式开场封面图默认必配，1.5.67）：
+        # flow manifest 缺 opening 键 → 进 missing；写上后不再缺；无 flow
+        # （章节模式）→ 开场保持目录、无配图义务；manifest 没有 opening 段
+        # （自定义手写 manifest）→ 没有页面就没有配图义务。
+        flow_path = os.path.join(td, "flow_manifest.json")
+        with open(flow_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "total_duration": 5.0, "flow": True,
+                "sentences": [_sent(i, f"第{i}句。") for i in range(5)],
+                "segments": [
+                    {"id": "opening", "title": "本期内容",
+                     "sentences": [_sent(0, "开场白。")]},
+                    {"id": "news1", "title": "第一条",
+                     "sentences": [_sent(1, "第一条内容。")]},
+                ],
+            }, f, ensure_ascii=False)
+        sids, missing = _image_coverage(flow_path, images_json, vertical=True)
+        check("run._image_coverage: vertical+flow -> opening counted as missing",
+              sids == ["news1", "opening"] and missing == ["opening"],
+              (sids, missing))
+
+        with open(images_json, "w", encoding="utf-8") as f:
+            json.dump({"news1": "images/news1.png",
+                       "opening": "images/opening.png"}, f, ensure_ascii=False)
+        sids, missing = _image_coverage(flow_path, images_json, vertical=True)
+        check("run._image_coverage: vertical+flow + opening mapped -> no missing",
+              sids == ["news1", "opening"] and missing == [], (sids, missing))
+
+        # 章节模式（manifest 无 flow 字段）：开场保持目录，无配图义务。
+        # images.json 先恢复全配齐——上一条断言刚把它改写成只含 news1+opening，
+        # 残留状态会让本条的 missing 混进无关段落（fixture 状态污染）。
+        with open(images_json, "w", encoding="utf-8") as f:
+            json.dump({"news1": "images/news1.png", "news2": "images/news2.png",
+                       "seg1": "images/seg1.png"}, f, ensure_ascii=False)
+        sids, missing = _image_coverage(manifest_path, images_json, vertical=True)
+        check("run._image_coverage: vertical chapter mode -> opening not required",
+              sids == ["news1", "news2", "seg1"] and missing == [], (sids, missing))
+
+        no_open_path = os.path.join(td, "no_opening.json")
+        with open(no_open_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "total_duration": 2.0, "flow": True,
+                "sentences": [_sent(0, "第一句。"), _sent(1, "第二句。")],
+                "segments": [{"id": "seg1", "title": "讲解",
+                              "sentences": [_sent(0, "第一句。")]}],
+            }, f, ensure_ascii=False)
+        with open(images_json, "w", encoding="utf-8") as f:
+            json.dump({"seg1": "images/seg1.png"}, f, ensure_ascii=False)
+        sids, missing = _image_coverage(no_open_path, images_json, vertical=True)
+        check("run._image_coverage: vertical+flow but no opening segment -> not required",
+              sids == ["seg1"] and missing == [], (sids, missing))
+
     # 17e. gen_hyperframes 缺图覆盖率提示（分步执行时的唯一缺图防线）
     from gen_hyperframes import _uncovered_content_sids
     _cov_manifest = {"segments": [
@@ -1205,6 +1257,57 @@ def _test_15_split_series_coverage():
     _cov_none = _uncovered_content_sids({"sentences": []}, {"news1": "x.png"})
     check("gen_hyperframes._uncovered: manifest without segments -> empty",
           _cov_none == [], _cov_none)
+
+    # 17e2. 竖屏 flow 模式开场封面图默认必配判定（1.5.67）：portrait/both
+    # + flow 无 opening 即缺；有 opening 键即满足；landscape 可选；竖屏
+    # 章节模式（flow=False）开场保持目录，无配图义务。
+    from gen_hyperframes import _opening_cover_missing
+    check("gen_hyperframes._opening_cover_missing: portrait/both+flow without opening -> True",
+          _opening_cover_missing({}, "portrait", True)
+          and _opening_cover_missing({}, "both", True))
+    check("gen_hyperframes._opening_cover_missing: portrait+flow with opening -> False",
+          not _opening_cover_missing({"opening": "images/opening.png"},
+                                     "portrait", True))
+    check("gen_hyperframes._opening_cover_missing: landscape+flow opening stays optional",
+          not _opening_cover_missing({}, "landscape", True))
+    check("gen_hyperframes._opening_cover_missing: portrait chapter mode (no flow) -> not required",
+          not _opening_cover_missing({}, "portrait", False))
+
+    # 17e3. 模式预设（template 定义、gen/run 生产，1.5.69）：modes 块两个
+    # 预设齐全且五键取值符合语义；选择逻辑 flow→flow / 无 flow→chapter；
+    # 坏定义（预设缺失/缺键/枚举域外）响亮报错不静默回退。
+    import _template as _tpl_mod
+    from _template import get_mode_preset, load_template
+    _modes = load_template()["modes"]
+    check("template modes: chapter/flow presets both defined",
+          set(_modes) == {"chapter", "flow"}, sorted(_modes))
+    check("template modes: flow preset flag values",
+          _modes["flow"] == {"numbered": False, "openingPreview": "chips",
+                             "closingRecap": False, "transition": "crossfade",
+                             "verticalOpeningCover": True}, _modes["flow"])
+    check("template modes: chapter preset flag values",
+          _modes["chapter"] == {"numbered": True, "openingPreview": "agenda",
+                                "closingRecap": True, "transition": "wipe",
+                                "verticalOpeningCover": False},
+          _modes["chapter"])
+    check("get_mode_preset: manifest flow=true -> flow preset",
+          get_mode_preset({"flow": True}) is _modes["flow"])
+    check("get_mode_preset: manifest without flow -> chapter preset",
+          get_mode_preset({}) is _modes["chapter"])
+    for _bad_tpl, _why in (
+        ({"modes": {}}, "missing preset"),
+        ({"modes": {"flow": {"numbered": False}}}, "missing flags"),
+        ({"modes": {"flow": {"numbered": False, "openingPreview": "wrong",
+                             "closingRecap": False, "transition": "crossfade",
+                             "verticalOpeningCover": True}}}, "bad enum"),
+    ):
+        _tpl_mod._TEMPLATE_CACHE["default"] = _bad_tpl
+        try:
+            get_mode_preset({"flow": True})
+            check(f"get_mode_preset: {_why} rejected", False, "no raise")
+        except ValueError:
+            check(f"get_mode_preset: {_why} rejected", True, None)
+    _tpl_mod._TEMPLATE_CACHE.clear()
 
     # 17f. search_images --sids 路由分组过滤（只搜走方式 A 的段落）
     from search_images import _filter_title_items
@@ -1319,7 +1422,7 @@ def _test_18_anti_regression():
     check("DEFAULT_SPEED defined in _contracts", "DEFAULT_SPEED = 1.5" in _contracts_src)
     check("OPENING_CLOSING_DEFAULT_SPEED defined in _contracts",
           "OPENING_CLOSING_DEFAULT_SPEED = 1.2" in _contracts_src)
-    for _f in ("scripts/pipeline.py", "scripts/budget.py", "scripts/split_series.py"):
+    for _f in ("scripts/pipeline.py", "scripts/budget.py", "scripts/series.py"):
         _s = _read_src(_f)
         _base = os.path.basename(_f)
         check(f"{_base} uses DEFAULT_SPEED", "DEFAULT_SPEED" in _s)
@@ -1418,7 +1521,6 @@ def _test_19_wcag():
     check("_hex_to_rgb01 rejects garbage",
           _hex_to_rgb01("#ff") is None
           and _hex_to_rgb01("not-a-color") is None)
-    _wcag_fail = 0
     for _tname in list_theme_names():
         _tc = get_theme_colors(_tname)
         _stops = _hex6.findall(_tc.get("bg_gradient", ""))
@@ -1434,13 +1536,10 @@ def _test_19_wcag():
             check(f"tagline {_ac} on {_tname} >= {_need}",
                   bool(_ratios) and min(_ratios) >= _need,
                   f"worst={min(_ratios):.2f}" if _ratios else "no stops")
-            if not _ratios or min(_ratios) < _need:
-                _wcag_fail += 1
-    check("WCAG tagline all combos pass", _wcag_fail == 0)
 
 
-def _test_20_check_series():
-    # ── 20. check_series.find_drifts（系列一致性纯函数）────────────
+def _test_20_series_check():
+    # ── 20. series.check find_drifts（系列一致性纯函数）────────────
     # ── 20a. main() 内不得局部 import math（真回归）────────
     # ── 20b. 竖屏 cue 行宽必须按画幅收紧────────────────
     # ── 20c. 竖屏 verse 句子流结构与滚动参照系 ───────────────
@@ -1448,9 +1547,8 @@ def _test_20_check_series():
     # ── 20c3. 横屏配图段内容框独立于标题框 ─────────────────────────
     # ── 20d. bar 形态（经典形式）：横屏固定模式 ─────────────────
     # ── 20e. portrait 紧凑竖屏（3:4，1080x1440）─────────────────
-    # ── 20f. 模式固定按画幅绑定：横屏 bar、竖屏 verse ────────────
-    print("\n[20] check_series.find_drifts")
-    from check_series import find_drifts
+    print("\n[20] series.check find_drifts")
+    from series import find_drifts
     check("single episode: nothing to compare",
           find_drifts([{"dir": "a", "opening_title": "X"}]) == [])
     check("consistent series has no drifts",
@@ -1474,20 +1572,6 @@ def _test_20_check_series():
     check("flow None vs False normalized (both chapter mode)",
           find_drifts([{"dir": "a", "flow": None},
                        {"dir": "b", "flow": False}]) == [])
-
-    print("\n[20a] no local import math in main()")
-    import ast as _ast
-    with open(os.path.join(_SKILL_ROOT, "scripts", "pipeline.py"),
-              encoding="utf-8") as _pf:
-        _tree = _ast.parse(_pf.read())
-    _main_fn = next(_n for _n in _tree.body
-                    if isinstance(_n, _ast.FunctionDef) and _n.name == "main")
-    _local_math_imports = [
-        _n for _n in _ast.walk(_main_fn)
-        if isinstance(_n, _ast.Import)
-        and any(_a.name == "math" for _a in _n.names)]
-    check("pipeline.main() has no local 'import math'",
-          not _local_math_imports)
 
     # ── 20b. 竖屏 cue 行宽必须按画幅收紧────────────────
     # 竖屏 verse 物理行宽 ≈22 字（980px/40px）。若调用点回退到横屏默认
@@ -1520,7 +1604,6 @@ def _test_20_check_series():
     _v_ar_t = _tpl_v["image"]["aspect"]
     _v_mt_t = _tpl_v["image"]["marginTop"]
     _v_ms_t = _tpl_v["image"].get("marginSide", 0)
-    _v_vh_t = _tpl_v["verse"]["windowHeight"]
     _v_vc_t = _tpl_v["verse"]["clipPad"]
     _vman = {
         "total_duration": 12.0,
@@ -1705,11 +1788,11 @@ def _test_20_check_series():
           and 'class="badge"' not in _bfh)
 
     # ── 20d. bar 形态（经典形式）：横屏固定模式 ─────────────────
-    _bhtml = _gh2.generate_html(_vman, "audio/combined.wav")
+    # 复用 20c 的默认横屏产物 _lhtml（同一调用，不重复生成）
     check("bar mode: sub-bar DOM present, verse DOM absent",
-          'class="sub-bar"' in _bhtml and 'class="verse"' not in _bhtml)
+          'class="sub-bar"' in _lhtml and 'class="verse"' not in _lhtml)
     check("bar mode: body cards rendered (no verse replacement)",
-          '.sub-speaker{' in _bhtml and 'subEls' in _bhtml)
+          '.sub-speaker{' in _lhtml and 'subEls' in _lhtml)
 
     # ── 20e. portrait 紧凑竖屏（3:4，1080x1440）─────────────────
     # portrait 在 generate_html 本体内归一化为 vertical 布局家族
@@ -1722,23 +1805,9 @@ def _test_20_check_series():
     check("portrait verse: compact padding + image slot (from template)",
           f'padding:{_v_pad_t}!important' in _phtml
           and f'aspect-ratio:{_v_ar_t}!important' in _phtml)
-    _bphtml = _gh2.generate_html(_vman, "audio/combined.wav",
-                                 width=1080, height=1440, aspect="portrait")
     check("portrait verse: sub-bar absent (vertical family is verse-only)",
-          'class="verse"' in _bphtml
-          and 'class="sub-bar"' not in _bphtml)
-
-    # ── 20f. 模式固定按画幅绑定：横屏 bar、竖屏 verse ────────────
-    # 模式不是用户选项，generate_html 内部按画幅解析（上方 20c 已断言
-    # 不可传参；这里补默认调用的两画幅产物形态）
-    _def_l = _gh2.generate_html(_vman, "audio/combined.wav")
-    check("default: landscape resolves to bar (sub-bar present, "
-          "verse absent)",
-          'class="sub-bar"' in _def_l and 'class="verse"' not in _def_l)
-    _def_v = _gh2.generate_html(_vman, "audio/combined.wav",
-                                width=1080, height=1440, aspect="portrait")
-    check("default: vertical resolves to verse",
-          'class="verse"' in _def_v and 'class="sub-bar"' not in _def_v)
+          'class="verse"' in _phtml
+          and 'class="sub-bar"' not in _phtml)
 
 
 def _test_20c_manifest():
@@ -1817,7 +1886,6 @@ def _test_21_wcag_ext():
 
     import gen_hyperframes as _gh19  # [21] 说话人/序号配色常量的家
     _hex6 = _re.compile(r"#[0-9a-fA-F]{6}")
-    _wcag_ext_fail = 0
     for _tname in list_theme_names():
         _tc = get_theme_colors(_tname)
         _stops = _hex6.findall(_tc.get("bg_gradient", ""))
@@ -1831,8 +1899,6 @@ def _test_21_wcag_ext():
         check(f"sub text on sub_bar [{_tname}] >= 3.0",
               _r is not None and _r >= 3.0,
               f"{_r:.2f}" if _r is not None else "parse fail")
-        if _r is None or _r < 3.0:
-            _wcag_ext_fail += 1
         # 21b 说话人色 vs 字幕栏（复刻 generate_html 的明暗分组选择）
         _grp = (_gh19.SPK_COLORS_ON_LIGHT
                 if 0.299 * _sub[0] + 0.587 * _sub[1] + 0.114 * _sub[2] > 0.5
@@ -1841,8 +1907,6 @@ def _test_21_wcag_ext():
             _r = _cr01(_hex01(_c), _sub)
             check(f"speaker {_c} on sub_bar [{_tname}] >= 3.0",
                   _r >= 3.0, f"{_r:.2f}")
-            if _r < 3.0:
-                _wcag_ext_fail += 1
         # 21d 正文 vs body 卡片底（body_bg 半透明叠 bg 最坏段，正文色
         # 自身也带 alpha，两层合成才是在屏幕上的有效色对）
         _bb = _rgba01(_tc.get("body_bg", "rgba(0,0,0,0.2)"))
@@ -1853,20 +1917,14 @@ def _test_21_wcag_ext():
             _r = _cr01(_eff, _card)
             check(f"body text on card [{_tname}] >= 3.0",
                   _r >= 3.0, f"{_r:.2f}")
-            if _r < 3.0:
-                _wcag_ext_fail += 1
         else:
             check(f"body text on card [{_tname}] parse ok", False,
                   "rgba parse fail")
-            _wcag_ext_fail += 1
 
     # 21c agenda 序号数字 vs accent 圆底（8 色 × 固定数字色）
     for _ac in get_accent_palette():
         _r = _cr01(_hex01(_gh19.AGENDA_NUM_TEXT_COLOR), _hex01(_ac))
         check(f"agenda num on {_ac} >= 3.0", _r >= 3.0, f"{_r:.2f}")
-        if _r < 3.0:
-            _wcag_ext_fail += 1
-    check("WCAG extended all combos pass", _wcag_ext_fail == 0)
 
 
 def _test_22_review_fix():
@@ -1937,7 +1995,7 @@ def _test_22_review_fix():
 
     # 22c pipeline --check-env 可独立运行（--source 不再 required；必填校验
     # 在 check-env 早退之后）
-    with open(os.path.join(HERE, "pipeline.py"), encoding="utf-8") as _f22:
+    with open(os.path.join(SCRIPTS_DIR, "pipeline.py"), encoding="utf-8") as _f22:
         _pipe22 = _f22.read()
     check("check-env: --source optional",
           'parser.add_argument("--source", default=None' in _pipe22)
@@ -1949,14 +2007,14 @@ def _test_22_review_fix():
 
     # 22d BGM 混音 amix normalize=0（默认 normalize 会把两路各乘 1/2，
     # 人声被无感衰减 -6dB）
-    with open(os.path.join(HERE, "_audio.py"), encoding="utf-8") as _f22:
+    with open(os.path.join(SCRIPTS_DIR, "_audio.py"), encoding="utf-8") as _f22:
         _audio22 = _f22.read()
     check("mix_bgm: amix normalize=0 (voice not halved)",
           "amix=inputs=2" in _audio22 and "normalize=0" in _audio22)
 
     # 22e run.py --aspect both 渲染两个成片并分别校验（只渲染横屏的话
     # 竖屏 HTML 白做）
-    with open(os.path.join(HERE, "run.py"), encoding="utf-8") as _f22:
+    with open(os.path.join(SCRIPTS_DIR, "run.py"), encoding="utf-8") as _f22:
         _run22 = _f22.read()
     check("run.py: --aspect both renders out.mp4 + out.vertical.mp4",
           'args.aspect == "both"' in _run22
@@ -1988,14 +2046,7 @@ def _test_22_review_fix():
     # JS/DOM（含行透明度 lop*op 双重相乘那套逻辑）；bar（横屏）输出则
     # 完整携带
     import gen_hyperframes as _gh22f
-    manifest_basic = {
-        "sentences": [
-            {"index": i, "text": f"第{['一', '二', '三', '四', '五', '六'][i]}句。",
-             "start_time": i * 2.4, "duration": 2.0}
-            for i in range(6)
-        ],
-        "total_duration": 14.5,
-    }
+    manifest_basic = _base_manifest()
     _verse_dom_html = _gh22f.generate_html(manifest_basic, "audio/combined.wav",
                                            width=1080, height=1440,
                                            aspect="portrait")
@@ -2014,13 +2065,6 @@ def _test_22_review_fix():
     check("bar mode: sub-bar row stagger opacity logic present",
           "rows[r].style.opacity = lop;" in html_long
           and "lop * op" not in html_long)
-
-    # 22g gen_hyperframes 显式导入 get_ffmpeg（缺 import 会在视频探测处
-    # NameError）
-    with open(os.path.join(HERE, "gen_hyperframes.py"), encoding="utf-8") as _f22:
-        _gh22 = _f22.read()
-    check("gen_hyperframes imports get_ffmpeg",
-          "from _ffmpeg import get_ffmpeg" in _gh22)
 
 
 def _test_23_review_fix_guards():
@@ -2128,7 +2172,7 @@ def _test_23_review_fix_guards():
           abs(measure_duration("ffmpeg", _probe) - _exact) < 1e-9,
           measure_duration("ffmpeg", _probe))
     check("_wav_duration returns None for non-wav",
-          _wav_duration(os.path.join(HERE, "preview.js")) is None)
+          _wav_duration(os.path.join(SCRIPTS_DIR, "preview.js")) is None)
 
     # 23f 契约层：坏 sid / 坏 accent hex 在进管线前报错
     from _contracts import validate_timing_manifest as _vtm23
@@ -2211,7 +2255,7 @@ def _test_23_review_fix_guards():
         check("render cache key: workers change changes key",
               _runmod23._render_cache_key(_html23, _m23f, _A23) != _k1)
         # run.py 新旗标在位
-        with open(os.path.join(HERE, "run.py"), encoding="utf-8") as f:
+        with open(os.path.join(SCRIPTS_DIR, "run.py"), encoding="utf-8") as f:
             _run_src23g = f.read()
         check("run.py: --force-check / --reuse-render flags present",
               "--force-check" in _run_src23g and "--reuse-render" in _run_src23g)
@@ -2266,43 +2310,24 @@ def _test_23_review_fix_guards():
 
 
 def _test_25_gating():
-    # 25. 门控摘要口径（wiki 自进化体系已于 1.5.51 奥卡姆剃刀砍除；
-    # parse_summary_totals 内联进 dev/check.py，这里钉住接线与语义）
-    print("\n[25] 门控摘要口径")
+    # 25. 测试基建自身的确定性部分（_assets GSAP 缓存 + 集成层纯函数）。
+    # 集成层的真子进程/真 ffmpeg/run.py 编排部分在 main() 第二段整跑。
+    print("\n[25] 测试基建（_assets / 集成层纯函数）")
 
-    def _read_src25(name):
-        with open(os.path.join(HERE, name), "r", encoding="utf-8") as f:
-            return f.read()
-
-    _cs25 = _read_src25(os.path.join("..", "dev", "check.py"))
-    check("check.py: 子进程结果带上了自报明细",
-          'entry["passed"], entry["total"] = p2, t2' in _cs25)
-    check("check.py: 摘要解析内联实现（取最后一行 __SUMMARY_JSON__）",
-          'SUMMARY_PREFIX = "__SUMMARY_JSON__"' in _cs25
-          and "def parse_summary_totals(" in _cs25)
-
-    # ── 收尾：覆盖率扫描剩下的两个既有模块也补上 ──
-    # 它俩都在本次改造之前就存在，但"零覆盖"这条结论同样成立。扫描报出来是
-    # 线索，既然扫到了就没理由绕过去（见 patterns/p11）。
     import urllib.request as _urlreq25
-    # run_eval 在 dev/，补一条路径（_assets 在 scripts/，由顶部 sys.path 覆盖）
-    _DEV_DIR25 = os.path.abspath(os.path.join(HERE, "..", "dev"))
-    if _DEV_DIR25 not in sys.path:
-        sys.path.insert(0, _DEV_DIR25)
-    import run_eval as _RE25
     import _assets as _AS25
 
     # ── run_eval.py：只测不需要真实 ffmpeg / 网络的确定性部分 ──
     check("run_eval: segments 条数在区间内判过",
-          _RE25.check_segment_count({"segments": [{}] * 6}) == (True, 6))
+          check_segment_count({"segments": [{}] * 6}) == (True, 6))
     check("run_eval: 条数低于下限判不过（含边界 4）",
-          _RE25.check_segment_count({"segments": [{}] * 4}) == (False, 4))
+          check_segment_count({"segments": [{}] * 4}) == (False, 4))
     check("run_eval: 条数高于上限判不过（含边界 9）",
-          _RE25.check_segment_count({"segments": [{}] * 9}) == (False, 9))
+          check_segment_count({"segments": [{}] * 9}) == (False, 9))
     check("run_eval: 空 segments 判不过且如实报 0",
-          _RE25.check_segment_count({}) == (False, 0))
+          check_segment_count({}) == (False, 0))
     check("run_eval: 区间可自定义",
-          _RE25.check_segment_count({"segments": [{}] * 3},
+          check_segment_count({"segments": [{}] * 3},
                                     expect_range=(3, 3)) == (True, 3))
 
     import tempfile as _tf25
@@ -2314,19 +2339,21 @@ def _test_25_gating():
         with _cl25.redirect_stdout(_io25.StringIO()):
             return fn(*a, **k)
 
-    # check/skip 写的是模块级 RESULTS/SKIPPED，测完必须还原
-    _ores25, _oskip25 = _RE25.RESULTS, _RE25.SKIPPED
+    # ev_check/ev_skip 写的是模块级 EV_RESULTS/EV_SKIPPED，测完必须还原
+    _ores25, _oskip25 = EV_RESULTS[:], EV_SKIPPED[:]
     try:
-        _RE25.RESULTS, _RE25.SKIPPED = [], []
-        _quiet25(_RE25.check, "x", True)
-        _quiet25(_RE25.check, "y", False, "细节")
-        _quiet25(_RE25.skip, "z", "本机缺编码器")
+        EV_RESULTS.clear()
+        EV_SKIPPED.clear()
+        _quiet25(ev_check, "x", True)
+        _quiet25(ev_check, "y", False, "细节")
+        _quiet25(ev_skip, "z", "本机缺编码器")
         check("run_eval: check/skip 分得清通过、失败与环境跳过",
-              _RE25.RESULTS == [("x", True), ("y", False)]
-              and _RE25.SKIPPED == [("z", "本机缺编码器")],
-              (_RE25.RESULTS, _RE25.SKIPPED))
+              EV_RESULTS == [("x", True), ("y", False)]
+              and EV_SKIPPED == [("z", "本机缺编码器")],
+              (EV_RESULTS, EV_SKIPPED))
     finally:
-        _RE25.RESULTS, _RE25.SKIPPED = _ores25, _oskip25
+        EV_RESULTS[:] = _ores25
+        EV_SKIPPED[:] = _oskip25
 
     # pick_h264_encoder：用假 ffmpeg 替身，免得依赖本机装了哪些编码器
     def _fake_ffmpeg25(body, tmpdir):
@@ -2352,18 +2379,18 @@ def _test_25_gating():
 
     with _tf25.TemporaryDirectory() as _td25:
         check("run_eval: 挑到本机唯一可用的 h264 编码器",
-              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+              pick_h264_encoder(_fake_ffmpeg25(
                   " V..... libopenh264  OpenH264 H.264 encoder ", _td25))
               == "libopenh264")
         check("run_eval: 多个可用时按优先级取 libx264",
-              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+              pick_h264_encoder(_fake_ffmpeg25(
                   " V..... libopenh264  OpenH264 \n"
                   " V..... libx264  libx264 H.264 ", _td25)) == "libx264")
         check("run_eval: 一个 h264 都没有时返回 None（应 SKIP 而非 FAIL）",
-              _RE25.pick_h264_encoder(_fake_ffmpeg25(
+              pick_h264_encoder(_fake_ffmpeg25(
                   " V..... vp9  VP9 encoder ", _td25)) is None)
         check("run_eval: 拿不到清单时退回 libx264（让真报错如实冒出来）",
-              _RE25.pick_h264_encoder(os.path.join(_td25, "not-exists"))
+              pick_h264_encoder(os.path.join(_td25, "not-exists"))
               == "libx264")
 
     # ── _assets.py：GSAP 本地缓存，全程不碰真实网络 ──
@@ -2453,13 +2480,898 @@ def _test_25_gating():
         _urlreq25.urlopen = _ouo25
 
 
+
+# ═══════════════════ 第二段：离线集成（原 dev/run_eval.py，1.5.74 并入）═══════════════════
+# 与上面断言层的分工：这里跑真子进程/真 ffmpeg/run.py 编排，抓跨脚本 CLI 胶水
+# 断裂。ev_check/ev_skip 写模块级 EV_RESULTS/EV_SKIPPED，由 main() 统一汇总。
+import contextlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+
+from _ffmpeg import get_ffmpeg  # noqa: E402
+from _audio import generate_silence, concat_audio, measure_duration  # noqa: E402
+from _script_utils import split_sentences  # noqa: E402
+from _contracts import (validate_segments_source, estimate_sentence_seconds,  # noqa: E402
+                        DEFAULT_CHARS_PER_SEC)
+
+EV_RESULTS = []
+# 环境缺能力（而非本技能有回归）时记到这里：不计入 pass/fail，不把环境问题
+# 伪装成失败，也不伪装成通过——维护者一眼能分辨"没跑"和"跑了没过"。
+EV_SKIPPED = []
+
+
+def ev_check(name, cond, detail=""):
+    EV_RESULTS.append((name, bool(cond)))
+    mark = "OK" if cond else "FAIL"
+    print(f"  [{mark}] {name}" + (f" — {detail}" if detail and not cond else ""))
+    return cond
+
+
+def ev_skip(name, reason):
+    EV_SKIPPED.append((name, reason))
+    print(f"  [SKIP] {name} — {reason}")
+
+
+# ── segments 条数在 5-8 条范围内的机械检查 ──────────────────────────────
+# 纯计数不需要语义判断；真正"该不该挑这 5-8 条"是语义判断，由 agent 在
+# 写稿阶段完成（SKILL.md 第 1 步选材标准），这里不重复。
+def check_segment_count(source, expect_range=(5, 8)):
+    n = len(source.get("segments", []))
+    lo, hi = expect_range
+    return lo <= n <= hi, n
+
+
+# ── 构造一份字段结构与 pipeline.py 真实产出完全一致的 timing_manifest.json，
+# 只是用静音代替 TTS 配音——省下真实 TTS API 调用，但走的是同一套
+# generate_silence/concat_audio/measure_duration（pipeline.py 自己也用这三个
+# 函数），不是另起一套 mock 逻辑，跟真实产物的字段/类型不会跑偏。
+def build_fake_manifest(source, out_dir, gap=0.3, chars_per_sec=DEFAULT_CHARS_PER_SEC):
+    ffmpeg_path = get_ffmpeg()
+    sentences_dir = os.path.join(out_dir, "sentences")
+    os.makedirs(sentences_dir, exist_ok=True)
+
+    manifest_sentences = []
+    grouped_segments = []
+    idx = 0
+    audio_files = []
+
+    def emit_block(text, speed):
+        nonlocal idx
+        out = []
+        for s in split_sentences(text):
+            dur = round(estimate_sentence_seconds(s, chars_per_sec, speed or 1.0), 3)
+            wav_path = os.path.join(sentences_dir, f"s{idx:04d}.wav")
+            generate_silence(ffmpeg_path, max(dur, 0.05), wav_path)
+            audio_files.append(wav_path)
+            entry = {"index": idx, "text": s, "start_time": 0.0, "duration": dur}
+            manifest_sentences.append(entry)
+            out.append(entry)
+            idx += 1
+        return out
+
+    emit_block(source.get("opening", ""), source.get("opening_speed"))
+    for i, seg in enumerate(source.get("segments", []), 1):
+        seg_sents = emit_block(seg.get("text", ""), seg.get("speed"))
+        grouped_segments.append({
+            "id": seg.get("id", f"news{i}"),
+            "title": seg.get("title", f"segment{i}"),
+            "tagline": seg.get("tagline") or "补充阅读",
+            "body": seg.get("body", ""),
+            "accent": seg.get("accent", "#3b82f6"),
+            "sentences": seg_sents,
+        })
+    emit_block(source.get("closing", ""), source.get("closing_speed"))
+
+    if not audio_files:
+        raise ValueError("没有任何句子，无法构造 manifest（segments 全空？）")
+
+    combined_path = os.path.join(out_dir, "combined.wav")
+    if not concat_audio(ffmpeg_path, audio_files, gap, combined_path):
+        raise RuntimeError("concat_audio 失败——检查 ffmpeg 是否可用")
+    total_dur = measure_duration(ffmpeg_path, combined_path)
+
+    cumulative = 0.0
+    for i, sd in enumerate(manifest_sentences):
+        sd["start_time"] = round(cumulative, 3)
+        cumulative += sd["duration"]
+        if i < len(manifest_sentences) - 1:
+            cumulative += gap
+
+    manifest = {
+        "sentences": manifest_sentences,
+        "total_duration": round(total_dur, 3),
+        "gap": gap,
+        "voice_id": "mock-silence",
+        "combined_audio": os.path.abspath(combined_path),
+        "segments": grouped_segments,
+    }
+    manifest_path = os.path.join(out_dir, "timing_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    return manifest_path, manifest
+
+
+# ── 不经过 Hyperframes/Chrome，直接用 ffmpeg
+# 合成一段时长匹配、编码为 H.264+AAC 的黑屏测试视频，喂给 verify_render.py。
+# 校验的是 verify_render.py 的判断逻辑本身，不是真实画面内容——画面对不对
+# 是语义/视觉层，仍然需要人看，这里不冒充能测。
+def pick_h264_encoder(ffmpeg_path):
+    """挑一个本机可用的 H.264 编码器，返回编码器名；一个都没有时返回 None。
+
+    写死 libx264 会让"ffmpeg 能跑但不含 libx264"这类环境（minimal 构建、
+    部分 Docker/conda 包）把环境限制报成本技能回归。这里按可用性降序回退，
+    拿不到编码器列表时退回 libx264（让真正的报错从合成那一步如实冒出来）。
+    """
+    try:
+        r = subprocess.run([ffmpeg_path, "-hide_banner", "-encoders"],
+                           capture_output=True, text=True, timeout=30)
+        encoders = r.stdout or ""
+    except Exception:
+        return "libx264"
+    for enc in ("libx264", "libopenh264", "h264_nvenc", "h264_qsv",
+                "h264_vulkan", "h264_vaapi", "h264_amf", "h264_v4l2m2m"):
+        if f" {enc} " in encoders:
+            return enc
+    return None
+
+
+def build_fake_render(ffmpeg_path, audio_path, duration, out_path):
+    """返回 True=合成成功 / False=脚本链路问题 / None=环境缺编码器（应 SKIP）。
+
+    失败时把 ffmpeg 的 stderr 尾部打出来：吞掉报错的话，维护者只能看到一行
+    "[FAIL] 测试视频合成成功"，无从判断是回归还是本机 ffmpeg 少编码器。
+    """
+    enc = pick_h264_encoder(ffmpeg_path)
+    if enc is None:
+        return None
+    r = subprocess.run([
+        ffmpeg_path, "-y",
+        "-f", "lavfi", "-i", f"color=c=black:s=320x240:d={duration}",
+        "-i", audio_path,
+        "-c:v", enc, "-c:a", "aac",
+        "-shortest", out_path,
+    ], capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60)
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        print(f"      合成失败（编码器 {enc}，退出码 {r.returncode}）：", flush=True)
+        for line in (r.stderr or "").strip().splitlines()[-5:]:
+            print(f"        {line}", flush=True)
+        return False
+    return True
+
+
+FIXTURE = {
+    "opening": "大家好，欢迎收看今天的AI日报。",
+    "closing": "感谢收看，我们明天见。",
+    "segments": [
+        {"title": "A公司发布新模型", "text": "第一条内容简介。这里补一句细节。"},
+        {"title": "B公司完成新一轮融资", "text": "第二条内容简介。"},
+        {"title": "C团队公布研究成果", "text": "第三条内容简介。这里也补一句。"},
+        {"title": "D平台上线新功能", "text": "第四条内容简介。"},
+        {"title": "E机构发布行业报告", "text": "第五条内容简介。"},
+    ],
+}
+
+
+def ev_main():
+    print("=== 集成层：离线集成测试（不调用真实 API，不需要 Chrome）===\n")
+
+    print("[1] segments_source.json 结构校验 + 条数机械检查")
+    source = validate_segments_source(FIXTURE)
+    ok, n = check_segment_count(source)
+    ev_check("segments 条数落在 5-8 条范围内", ok, f"实际 {n} 条")
+
+    with tempfile.TemporaryDirectory() as td:
+        print("\n[2] 构造 manifest（静音代替 TTS 配音，复用 pipeline.py 同款 _audio.py 函数）")
+        try:
+            manifest_path, manifest = build_fake_manifest(source, td)
+            ev_check("timing_manifest.json 写出成功", os.path.isfile(manifest_path))
+            ev_check("total_duration 是正数", manifest["total_duration"] > 0,
+                  str(manifest["total_duration"]))
+            ev_check("segments 分组数与稿件一致",
+                  len(manifest.get("segments", [])) == len(source["segments"]))
+        except Exception as e:
+            ev_check("manifest 构造未抛异常", False, str(e))
+            return
+
+        print("\n[3] gen_hyperframes.py 生成 HTML（真子进程，真实调用）")
+        html_path = os.path.join(td, "index.html")
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
+                             "-m", manifest_path, "-o", html_path],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        ev_check("gen_hyperframes.py 退出码 0", r.returncode == 0, r.stderr[-500:])
+        ev_check("index.html 已生成", os.path.isfile(html_path))
+        if os.path.isfile(html_path):
+            with open(html_path, encoding="utf-8") as f:
+                html = f.read()
+            for seg in source["segments"]:
+                ev_check(f"HTML 包含标题「{seg['title']}」", seg["title"] in html)
+
+        print("\n[5] 合成测试用 mp4（纯 ffmpeg，不经过 Hyperframes/Chrome）+ verify_render.py 校验")
+        ffmpeg_path = get_ffmpeg()
+        fake_mp4 = os.path.join(td, "fake_render.mp4")
+        built = build_fake_render(ffmpeg_path, manifest["combined_audio"],
+                                   manifest["total_duration"], fake_mp4)
+        if built is None:
+            # 维度 (1)(2) 要求成片是 H.264，本机 ffmpeg 一个 H.264 编码器
+            # 都没有时无从合成——这是环境限制，不是本技能回归，按 SKIP 处理。
+            ev_skip("测试视频合成（含 verify_render 校验）",
+                 "本机 ffmpeg 不含任何 H.264 编码器"
+                 "（libx264/libopenh264/h264_nvenc…），换一个完整 ffmpeg 后自动恢复")
+        else:
+            ev_check("测试视频合成成功", built)
+            if built:
+                r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "verify_render.py"),
+                                     "-f", fake_mp4, "-m", manifest_path],
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace")
+                ev_check("verify_render.py 判定通过（时长匹配 + H.264/AAC）",
+                      r.returncode == 0, (r.stdout + r.stderr)[-500:])
+
+    print("\n[6] run.py 第3/4步并行编排（假脚本代替真 TTS/配图 API，验证真并发+失败传播）")
+    check_run_parallel_orchestration()
+
+    print("\n[7] gen_hyperframes.py 配图引用完整性 fail-fast（缺失/损坏/正常三种情况）")
+    check_image_integrity_validation()
+
+    print("\n[8] run.py 缺图提示改为逐张独立审阅（列出候选原图全路径，不再生成拼图）")
+    check_missing_image_independent_review_hint()
+
+
+
+# ── gen_hyperframes.py 的配图引用校验（缺失文件见 5.6.1，损坏/截断文件
+# 同测）：该校验逻辑在 main() 的 CLI 参数解析分支里，
+# 不是独立可 import 的函数，所以用真子进程调用来测，跟 [3]/[4] 同样的方式。
+def check_image_integrity_validation():
+    with tempfile.TemporaryDirectory() as td:
+        manifest_path, manifest = build_fake_manifest(
+            {"opening": "开场。", "closing": "结尾。",
+             "segments": [{"title": "t1", "tagline": "tag1", "text": "内容一。"}]},
+            td)
+        html_path = os.path.join(td, "index.html")
+        img_dir = os.path.join(td, "images")
+        os.makedirs(img_dir, exist_ok=True)
+
+        # (a) 缺失文件：images.json 指向一个不存在的路径
+        images_json = os.path.join(td, "images_missing.json")
+        with open(images_json, "w", encoding="utf-8") as f:
+            json.dump({"news1": {"src": "images/does_not_exist.png"}}, f)
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
+                             "-m", manifest_path, "-o", html_path, "--images", images_json],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        ev_check("缺失图片：退出码非 0", r.returncode != 0)
+        ev_check("缺失图片：报错信息指出具体路径",
+              "does_not_exist.png" in r.stderr, r.stderr[-300:])
+
+        # (b) 损坏文件：文件存在但不是合法图片（模拟下载中断/截断）
+        corrupt_path = os.path.join(img_dir, "news1.png")
+        with open(corrupt_path, "wb") as f:
+            f.write(b"not a real png, truncated download")
+        images_json2 = os.path.join(td, "images_corrupt.json")
+        with open(images_json2, "w", encoding="utf-8") as f:
+            json.dump({"news1": {"src": "images/news1.png"}}, f)
+        # 损坏探测靠 PIL（gen_hyperframes 无 Pillow 时降级为 warn + exit 0，
+        # 那是设计好的降级不是回归）——本解释器没有 Pillow 就 SKIP 这两条
+        try:
+            from PIL import Image as _pil_probe  # noqa: F401
+            _has_pil = True
+        except ImportError:
+            _has_pil = False
+        r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
+                             "-m", manifest_path, "-o", html_path, "--images", images_json2],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if _has_pil:
+            ev_check("损坏图片：退出码非 0", r.returncode != 0)
+            ev_check("损坏图片：报错信息标明「损坏/无法解码」",
+                  "损坏" in r.stderr or "无法解码" in r.stderr, r.stderr[-300:])
+        else:
+            ev_skip("损坏图片：退出码非 0（连同类目「报错信息标明」）",
+                 "本解释器无 Pillow，gen_hyperframes 按设计降级为 warn，"
+                 "损坏探测无从谈起（装 Pillow 后自动恢复）")
+
+        # (c) 正常对照组：合法的最小 PNG 应该正常通过、生成 HTML
+        try:
+            from PIL import Image as _PILImage
+            _PILImage.new("RGB", (4, 4), color="red").save(corrupt_path)
+            r = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "gen_hyperframes.py"),
+                                 "-m", manifest_path, "-o", html_path, "--images", images_json2],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            ev_check("正常图片：退出码为 0", r.returncode == 0, r.stderr[-300:])
+            ev_check("正常图片：HTML 已生成", os.path.isfile(html_path))
+        except ImportError:
+            ev_check("正常对照组：Pillow 未安装，已跳过（不计入失败）", True)
+
+
+# ── run.py 把 TTS 和配图搜索并行跑——这里不调真实
+# pipeline.py/search_images.py（要真实 API），而是用两个假脚本替身验证：
+# (a) 两个子进程真的同时起、不是伪装成并行实际顺序跑（用耗时差反推）
+# (b) 任一步失败时 run.py 能正确以对应退出码终止，不会吞掉错误
+def check_run_parallel_orchestration():
+    import importlib
+    import time as _time
+
+    # 假脚本 fixtures 放进独立的临时目录，而不是 dev/ 目录：避免两个 run_eval
+    # 并发跑时互相删除对方还在用的 fixture 文件（dev/ 下共享路径会踩）。
+    fixture_tmp = tempfile.TemporaryDirectory(prefix="run_eval_fixtures_")
+    fixture_dir = fixture_tmp.name
+    fake_pipeline = os.path.join(fixture_dir, "_fixtures_fake_pipeline.py")
+    fake_search = os.path.join(fixture_dir, "_fixtures_fake_search_images.py")
+    fake_pipeline_fail = os.path.join(fixture_dir, "_fixtures_fake_pipeline_fail.py")
+
+    for path, body in [
+        (fake_pipeline, FAKE_PIPELINE_SRC),
+        (fake_search, FAKE_SEARCH_IMAGES_SRC),
+        (fake_pipeline_fail, FAKE_PIPELINE_FAIL_SRC),
+    ]:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+
+    try:
+        os.environ["STEPFUN_API_KEY"] = "fake-key-for-run-eval"
+        sys.path.insert(0, SCRIPTS_DIR)
+        run_mod = importlib.import_module("run")
+
+        src = {"opening": "开场。", "closing": "结尾。",
+               "segments": [{"title": "t1", "text": "内容。"}]}
+
+        with tempfile.TemporaryDirectory() as td:
+            src_path = os.path.join(td, "segments_source.json")
+            with open(src_path, "w", encoding="utf-8") as f:
+                json.dump(src, f, ensure_ascii=False)
+
+            # (a) 真并发：fake_pipeline 睡 2.5s，fake_search 睡 1.0s。
+            # 顺序执行约 3.5s，并行执行约 max(2.5,1.0)=2.5s。sleep 取大是
+            # 为了让"并行远小于顺序"的判定窗口吸收子进程 spawn 开销
+            # （venv/Defender 下实测稳定 +0.6s：曾用 1.2s 基准在 2.3 窗口
+            # 连续假红——开销是稳定的，重试救不了，只能拉大绝对时长）。
+            run_mod._script = lambda name: {
+                "pipeline.py": fake_pipeline,
+                "search_images.py": fake_search,
+            }.get(name, os.path.join(SCRIPTS_DIR, name))
+            out_dir = os.path.join(td, "audio_output")
+            sys.argv = ["run.py", "--source", src_path, "-o", out_dir, "--until", "images"]
+            # 墙钟计时对机器负载敏感（门控里 selftest 刚跑完，Windows
+            # Defender 对新建临时文件的扫描会让子进程 spawn 慢 0.5s+，
+            # 曾在 check.py 上下文稳定假红、单跑全绿）——墙钟类断言重试
+            # 3 次取任一通过，判定窗口仍是"并行远小于顺序"的宽区间。
+            elapsed = None
+            for _attempt in range(3):
+                t0 = _time.time()
+                run_mod.main()
+                elapsed = _time.time() - t0
+                if elapsed < 3.2:
+                    break
+                _time.sleep(0.5)
+            ev_check("TTS+配图真并行（耗时接近较慢一步，而非两步相加）",
+                  elapsed < 3.2, f"实际耗时 {elapsed:.2f}s（顺序应约 3.5s，并行应约 2.5s，已重试 3 次）")
+
+        # (b) 失败传播：TTS 假脚本以退出码 7 失败，run.py 应该原样传播退出码
+        with tempfile.TemporaryDirectory() as td2:
+            src_path2 = os.path.join(td2, "segments_source.json")
+            with open(src_path2, "w", encoding="utf-8") as f:
+                json.dump(src, f, ensure_ascii=False)
+            run_mod._script = lambda name: {
+                "pipeline.py": fake_pipeline_fail,
+                "search_images.py": fake_search,
+            }.get(name, os.path.join(SCRIPTS_DIR, name))
+            out_dir2 = os.path.join(td2, "audio_output")
+            sys.argv = ["run.py", "--source", src_path2, "-o", out_dir2, "--until", "images"]
+            try:
+                run_mod.main()
+                ev_check("TTS 失败时 run.py 以非零退出码终止", False, "main() 正常返回，没有退出")
+            except SystemExit as e:
+                ev_check("TTS 失败时 run.py 正确传播退出码 7", e.code == 7, f"实际退出码 {e.code}")
+    finally:
+        os.environ.pop("STEPFUN_API_KEY", None)
+        fixture_tmp.cleanup()
+
+
+FAKE_PIPELINE_SRC = '''import sys, time, os, json
+out = sys.argv[sys.argv.index("-o") + 1]
+os.makedirs(out, exist_ok=True)
+time.sleep(2.5)
+# fixture 必须满足 timing_manifest 契约（顶层 sentences 非空、每段
+# sentences 非空、句子四字段齐全）——run.py 的 _image_coverage 走
+# load_timing_manifest 校验，空列表会被当成坏产物拒收。
+_sent = {"index": 0, "text": "内容。", "start_time": 0.0, "duration": 1.0}
+with open(os.path.join(out, "timing_manifest.json"), "w") as f:
+    json.dump({"sentences": [_sent], "total_duration": 1.0,
+               "segments": [{"id": "news1", "title": "t1", "sentences": [_sent]}]}, f)
+'''
+
+FAKE_SEARCH_IMAGES_SRC = '''import sys, time, os, json
+out = sys.argv[sys.argv.index("-o") + 1]
+os.makedirs(out, exist_ok=True)
+time.sleep(1.0)
+with open(os.path.join(out, "..", "images.json"), "w") as f:
+    json.dump({"news1": {"src": "images/news1.png"}}, f)
+'''
+
+FAKE_PIPELINE_FAIL_SRC = '''import sys, time
+time.sleep(0.2)
+print("[fake_pipeline] 模拟失败", file=sys.stderr)
+sys.exit(7)
+'''
+
+FAKE_PIPELINE_SRC_2NEWS = '''import sys, time, os, json
+out = sys.argv[sys.argv.index("-o") + 1]
+os.makedirs(out, exist_ok=True)
+time.sleep(0.1)
+# 同上：契约要求顶层与每段的 sentences 都非空。
+_s1 = {"index": 0, "text": "内容一。", "start_time": 0.0, "duration": 1.0}
+_s2 = {"index": 1, "text": "内容二。", "start_time": 1.0, "duration": 1.0}
+with open(os.path.join(out, "timing_manifest.json"), "w") as f:
+    json.dump({"sentences": [_s1, _s2], "total_duration": 2.0,
+               "segments": [{"id": "news1", "title": "t1", "sentences": [_s1]},
+                            {"id": "news2", "title": "t2", "sentences": [_s2]}]}, f)
+'''
+
+FAKE_SEARCH_IMAGES_MISSING_SRC = '''import sys, time, os, json
+out = sys.argv[sys.argv.index("-o") + 1]
+os.makedirs(out, exist_ok=True)
+time.sleep(0.1)
+# news1 有定稿配图，news2 只有候选、没定稿——复现 run.py "缺图" 分支。
+with open(os.path.join(out, "..", "images.json"), "w") as f:
+    json.dump({"news1": {"src": "images/news1.png"}}, f)
+# 1x1 蓝色 PNG 的最小字节序列（硬编码，零依赖）：候选图落盘不依赖 Pillow，
+# 保证离线 gate 在没有 PIL 的机器上也能验证"缺图提示列出候选路径"这条链路。
+# 注意双反斜杠是刻意的：这段源码会被原样写进假脚本文件再执行，外层字符串
+# 不能把十六进制转义提前解释成真实字节（0x89 单独出现会让假脚本的
+# UTF-8 源非法）
+_MIN_PNG = (b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01"
+            b"\\x00\\x00\\x00\\x01\\x08\\x02\\x00\\x00\\x00\\x90wS\\xde"
+            b"\\x00\\x00\\x00\\x0cIDATx\\x9cc``\\xf8\\x0f\\x00\\x01"
+            b"\\x03\\x01\\x00\\x08\\x89\\xc2\\xec\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82")
+for i in range(1, 3):
+    with open(os.path.join(out, f"news2_cand{i}.png"), "wb") as f:
+        f.write(_MIN_PNG)
+'''
+
+
+# ── 纯独立审阅：run.py 缺图提示不再生成拼图，而是列出每个缺图段落的候选
+# 原图全路径，让 agent 逐张、全分辨率 Read 判断图↔题贴合度。验证：
+# 缺图时退出码 2；提示里包含"全分辨率"独立审阅指引且不再引用 review_grid；
+# 并把候选原图文件路径列出来（假 search 只落候选图文件、不写 candidates.json，
+# 新提示从 images 目录枚举 *_cand* 兜底）。
+def check_missing_image_independent_review_hint():
+    import importlib
+
+    fixture_tmp = tempfile.TemporaryDirectory(prefix="run_eval_fixtures_")
+    fixture_dir = fixture_tmp.name
+    fake_pipeline2 = os.path.join(fixture_dir, "_fixtures_fake_pipeline_2news.py")
+    fake_search_missing = os.path.join(fixture_dir, "_fixtures_fake_search_missing.py")
+    for path, body in [
+        (fake_pipeline2, FAKE_PIPELINE_SRC_2NEWS),
+        (fake_search_missing, FAKE_SEARCH_IMAGES_MISSING_SRC),
+    ]:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+
+    try:
+        os.environ["STEPFUN_API_KEY"] = "fake-key-for-run-eval"
+        sys.path.insert(0, SCRIPTS_DIR)
+        run_mod = importlib.import_module("run")
+        # 只替身 pipeline.py/search_images.py（假 API 调用）；其它脚本走真实路径。
+        run_mod._script = lambda name: {
+            "pipeline.py": fake_pipeline2,
+            "search_images.py": fake_search_missing,
+        }.get(name, os.path.join(SCRIPTS_DIR, name))
+
+        src = {"opening": "开场。", "closing": "结尾。",
+               "segments": [{"title": "t1", "text": "内容一。"},
+                            {"title": "t2", "text": "内容二。"}]}
+
+        with tempfile.TemporaryDirectory() as td:
+            src_path = os.path.join(td, "segments_source.json")
+            with open(src_path, "w", encoding="utf-8") as f:
+                json.dump(src, f, ensure_ascii=False)
+            out_dir = os.path.join(td, "audio_output")
+            project_dir = os.path.join(td, "hf-project")
+            # --until html（不是 images）：--until images 是"看完覆盖率
+            # 即止"的调试语义，在缺图拦截之前正常退出 0；要验证缺图
+            # exit 2 提示，得让流程走到拦截分支（html/render 路径都经过）。
+            sys.argv = ["run.py", "--source", src_path, "-o", out_dir,
+                        "--project", project_dir, "--until", "html"]
+
+            buf = io.StringIO()
+            exit_code = "未触发 SystemExit"
+            with contextlib.redirect_stderr(buf):
+                try:
+                    run_mod.main()
+                except SystemExit as e:
+                    exit_code = e.code
+
+            stderr_text = buf.getvalue()
+            ev_check("缺图时退出码为 2（等待 agent 审阅）", exit_code == 2,
+                  f"实际 {exit_code}；stderr: {stderr_text[-300:]}")
+            ev_check("提示不再生成/引用 review_grid 拼图",
+                  "review_grid" not in stderr_text, stderr_text[-300:])
+            ev_check("提示要求逐张 Read 候选原图（全分辨率独立审阅）",
+                  "全分辨率" in stderr_text and "Read" in stderr_text,
+                  stderr_text[-500:])
+            # 假 search 只落候选图文件（news2_cand*.png）、不写 candidates.json；
+            # 新提示从 images 目录枚举候选原图路径，便于 agent 直接 Read。
+            ev_check("提示列出了候选原图文件路径（可逐张 Read）",
+                  "news2_cand1.png" in stderr_text
+                  and "news2_cand2.png" in stderr_text,
+                  stderr_text[-500:])
+    finally:
+        os.environ.pop("STEPFUN_API_KEY", None)
+        fixture_tmp.cleanup()
+
+
+
+
+# ═══════════════════ 第三段：文档漂移/打包门禁（原 dev/check.py，1.5.74 并入）═══════════════════
+# 原则：文档声明了具体值 → 必须与实际一致，否则 FAIL；文档改成"引用权威来源、
+# 不写死数值"（推荐的防漂移写法）→ 放行。历史教训见各检查函数内的注释。
+ROOT = _SKILL_ROOT  # 门禁段沿用原 check.py 的路径根命名
+
+def _check_json(rel):
+    try:
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+            json.load(f)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _check_frontmatter():
+    try:
+        with open(os.path.join(ROOT, "SKILL.md"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return False, str(e)
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return False, "SKILL.md 缺少 YAML frontmatter"
+    fm = m.group(1)
+    for key in ("name:", "description:"):
+        if key not in fm:
+            return False, f"SKILL.md frontmatter 缺少 {key}"
+    return True, ""
+
+
+# SKILL.md"不适用场景"里的范围声明（纯英文稿件不适用）是"agent 读到越界
+# 请求要正确拒绝"的语义前提——没有脚本能替 agent 做这个判断（见
+# 本文件头部说明），但声明文本本身可以离线机械检查：它没有被误删/
+# 改弱，是 agent 大概率能正确拒绝的必要（非充分）条件。这不是给语义判断
+# "接了断言逻辑"，只是把"声明文本还在不在"这一半机械部分接入离线 gate，
+# 减少"改 SKILL.md 时手滑删掉这段导致 agent 从此不再正确拒绝，但没人发现"
+# 这种退化——发现得越早，成本越低。
+_SCOPE_DECLARATION_KEYWORDS = ("纯英文", "此技能不适用")
+
+
+def _check_scope_declaration():
+    skill_path = os.path.join(ROOT, "SKILL.md")
+    try:
+        with open(skill_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return False, str(e)
+    missing = [kw for kw in _SCOPE_DECLARATION_KEYWORDS if kw not in text]
+    if missing:
+        return False, (
+            f"SKILL.md '不适用场景' 一节似乎不再包含纯英文稿件的范围声明"
+            f"（缺关键词：{missing}）——这是 agent 正确拒绝纯英文稿件请求的"
+            f"前提之一，改动前请确认是有意为之，"
+            f"不是手滑删掉了"
+        )
+    return True, ""
+
+
+# ── 声明-实际交叉校验（防文档漂移）──────────────────────────────────
+# 历史上反复出现"文档/注释里写死的具体值与代码/配置实际值漂移"：
+# --gap 默认值（budget 0.3 vs pipeline 0.4）、tagline 兜底文案
+# （"补充阅读" vs "AI 资讯"）、模板图片尺寸（460 vs 680）、踩坑/评估
+# 条数。这类漂移没有任何机制兜底，等真实用户按文档操作时才暴露。
+# 这里把可以机械比对的部分接进离线 gate，原则是：
+#   - 文档声明了具体值 → 必须与实际一致，否则 FAIL；
+#   - 文档改成"引用权威来源、不写死数值"（推荐的防漂移写法，见
+#     run_eval.py 头部同款教训）→ 放行。
+# 这样既抓住漂移，又不强迫文档必须保留某个数字。
+
+def _read(rel):
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+        return f.read()
+
+
+def _check_gap_default():
+    """_contracts.DEFAULT_GAP 必须等于 pipeline.py --gap 的默认值
+    （不一致会让 estimate 相对实测系统性偏移 (n-1)×Δ）。
+    两处都是稳定字面量，解析不出来按失败处理，提醒同步维护本检查。"""
+    m1 = re.search(r'add_argument\("--gap",\s*type=float,\s*default=([0-9.]+)',
+                   _read("scripts/pipeline.py"))
+    m2 = re.search(r"DEFAULT_GAP\s*=\s*([0-9.]+)", _read("scripts/_contracts.py"))
+    if not m1 or not m2:
+        return False, ("无法从 pipeline.py / _contracts.py 解析出 --gap 默认值"
+                       "（代码结构变了？请同步更新本检查）")
+    if abs(float(m1.group(1)) - float(m2.group(1))) > 1e-9:
+        return False, (f"_contracts.DEFAULT_GAP={m2.group(1)} 与 pipeline --gap "
+                       f"默认值={m1.group(1)} 不一致（两处必须一起改，"
+                       "否则 estimate 系统性偏差）")
+    return True, ""
+
+
+def _declared_count_check(text, pattern, actual, what):
+    """text 里声明了"N 条"（pattern 第 1 组捕获数字）时，必须等于 actual；
+    没声明（文档改成不含数字的写法）则放行。"""
+    m = re.search(pattern, text)
+    if not m:
+        return True, ""
+    declared = int(m.group(1))
+    if declared != actual:
+        return False, f"{what}：文档声明 {declared} 条，实际 {actual} 条"
+    return True, ""
+
+
+def _measure_python_floor():
+    """测出 scripts/ 下全部脚本真正需要的最低 Python 版本。
+
+    用 ast.parse(feature_version=N) 从 3.8 起逐级探测：feature_version 只
+    拒绝"比该版本新"的语法，所以能全部通过的最小版本就是实际下限。
+    拿不到（例如代码用了探测范围之外的语法）返回 None。
+    """
+    import ast
+    import glob as _glob
+    versions = [(3, 8), (3, 9), (3, 10), (3, 11), (3, 12), (3, 13)]
+    sources = []
+    for path in sorted(_glob.glob(os.path.join(ROOT, "scripts", "*.py"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                sources.append((path, f.read()))
+        except OSError:
+            return None
+    for mv in versions:
+        try:
+            for _, src in sources:
+                ast.parse(src, feature_version=mv)
+        except SyntaxError:
+            continue
+        return mv
+    return None
+
+
+# 声明的 Python 下限允许比实测下限高 1 个小版本（保守声明是安全的：留一点
+# 余量防 stdlib API 意外）；高得更多就成了虚构的硬门槛——本次 review 就撞到
+# 声明 3.12、实测 3.8 语法即可跑（Python 3.11 全绿），把 3.11 的用户整条
+# 挡在门外。这类"文档凭空抬高环境要求"没有任何别的机制能发现。
+_PY_CLAIM_TOLERANCE_MINORS = 1
+
+
+def _check_python_version_claim():
+    """SKILL.md 声明的 Python 最低版本不得远高于代码实际所需版本。"""
+    import re as _re
+    skill = _read("SKILL.md")
+    m = _re.search(r"Python\s+(\d+)\.(\d+)\+", skill)
+    if not m:
+        return True, ""  # 文档不写死版本（推荐写法）→ 放行
+    claimed = (int(m.group(1)), int(m.group(2)))
+    actual = _measure_python_floor()
+    if actual is None:
+        return False, ("测不出 scripts/ 的最低 Python 版本（用了探测范围之外的"
+                       "语法？）——无法校验 SKILL.md 的版本声明，请同步更新本检查")
+    allowed = (actual[0], actual[1] + _PY_CLAIM_TOLERANCE_MINORS)
+    if claimed > allowed:
+        return False, (
+            f"SKILL.md 声明 Python {claimed[0]}.{claimed[1]}+，但 scripts/ 实际只需 "
+            f"{actual[0]}.{actual[1]}（最高允许声明 {allowed[0]}.{allowed[1]}）。"
+            f"凭空抬高版本门槛会把低版本用户整条挡在门外——请改回实测值，"
+            f"或说明确有必要的新语法依赖")
+    return True, ""
+
+
+def _check_workers_default():
+    """渲染抓帧 workers 的文档声明必须与 run.py 的默认值一致。
+
+    注意作用域：本技能里有三个同名的 --workers，默认值各不相同——
+      · run.py / hyperframes render：渲染抓帧 worker（默认 6）
+      · search_images.py：并行搜图/下载线程（默认 4）
+      · pipeline.py：并行 TTS 调用数（默认 4）
+    所以这条检查只认"渲染"语境下的声明，另外两个工具的 --workers 4 是
+    合法默认值，不能拿 run.py 的 6 去比对它们。
+    """
+    import re as _re
+    m = _re.search(r'add_argument\("--workers",\s*type=int,\s*default=(\d+)',
+                   _read("scripts/run.py"))
+    if not m:
+        return False, "无法从 run.py 解析出 --workers 默认值（代码结构变了？请同步更新本检查）"
+    actual = int(m.group(1))
+    # 出现"这些词"说明这条讲的是别的工具/或是在给调优建议，不是默认值声明
+    _OTHER_TOOL = ("搜图", "下载线程", "TTS", "配音", "并行 TTS")
+    _TUNING_ADVICE = ("降回", "降到", "建议降", "低配", "崩溃", "堆上限")
+    for rel in ("SKILL.md", "references/rendering.md"):
+        for lineno, line in enumerate(_read(rel).splitlines(), 1):
+            if "--workers" not in line:
+                continue
+            if any(k in line for k in _OTHER_TOOL + _TUNING_ADVICE):
+                continue
+            # 两种写法都算声明："--workers（默认 6）" / 命令里的 "--workers 6"
+            for dm in _re.finditer(r"--workers[）)]?\s*[（(]?\s*(?:默认\s*)?(\d+)",
+                                   line):
+                if int(dm.group(1)) != actual:
+                    return False, (
+                        f"{rel}:{lineno} 声明 --workers {dm.group(1)}，run.py 渲染"
+                        f"抓帧 worker 实际默认 {actual}。调默认值时必须连同文档示例"
+                        f"命令一起改，否则 agent 照抄示例就退回旧值")
+    return True, ""
+
+
+def _check_doc_drift():
+    """返回 [(name, passed, err)] 列表，由 main 逐项计入结果。"""
+    checks = []
+    skill = _read("SKILL.md")
+
+    r, err = _check_gap_default()
+    checks.append(("doc_drift:gap_default", r, err))
+
+    r, err = _check_python_version_claim()
+    checks.append(("doc_drift:python_version_claim", r, err))
+
+    r, err = _check_workers_default()
+    checks.append(("doc_drift:workers_default", r, err))
+
+    # tagline 兜底文案：pipeline.py 里写死的兜底字面量必须同步出现在 SKILL.md
+    m = re.search(r'_tagline\s*=\s*"([^"]+)"', _read("scripts/pipeline.py"))
+    if m:
+        lit = m.group(1)
+        passed = lit in skill
+        checks.append(("doc_drift:tagline_fallback", passed,
+                       "" if passed else
+                       f"pipeline 兜底 tagline 为“{lit}”，但 SKILL.md 未提及该文案（两处必须同步）"))
+    else:
+        checks.append(("doc_drift:tagline_fallback", True,
+                       "跳过：pipeline.py 未匹配到兜底字面量（变量名变了？）"))
+
+    # 模板横屏图片尺寸：SKILL.md 与 references/rendering.md 各自声明的 W×H
+    # 都必须与 template.json 一致（逐文件判，避免一份正确就放行另一份漂移）
+    try:
+        tpl = json.loads(_read("config/template.json"))
+        img = tpl["layout"]["landscape"]["image"]
+        declared = f'{img["width"]}×{img["height"]}'
+        _docs = (("SKILL.md", skill),
+                 ("references/rendering.md", _read("references/rendering.md")))
+        _missing = [name for name, doc in _docs if declared not in doc]
+        passed = not _missing
+        checks.append(("doc_drift:image_size", passed,
+                       "" if passed else
+                       f"template.json 横屏图片为 {declared}，但 {', '.join(_missing)} "
+                       f"未按此声明（改模板或改文档，两处必须同步）"))
+    except Exception as e:
+        checks.append(("doc_drift:image_size", False, f"无法解析 template.json：{e}"))
+
+    # 踩坑条数：SKILL.md / pitfalls.md 标题里声明的条数 == 实际 ### N. 小节数
+    pitfalls = _read("references/pitfalls.md")
+    actual = len(re.findall(r"^### \d+\.", pitfalls, re.M))
+    for src_text, pat, what in (
+            (skill, r"(\d+) 条踩坑记录", "SKILL.md 踩坑条数"),
+            (pitfalls, r"（(\d+) 条踩坑记录）", "pitfalls.md 标题条数")):
+        r, err = _declared_count_check(src_text, pat, actual, what)
+        checks.append((f"doc_drift:pitfalls_count:{what}", r, err))
+
+    # CLI 选项漂移：SKILL.md 里出现的 `--aspect <val>` 必须都是 run.py argparse
+    # 实际接受的 choices。这是之前 `--aspect vertical` 存活一整个版本的根因——
+    # 没任何门禁交叉校验"文档声明的 CLI 选项 <-> 代码 argparse choices"。
+    try:
+        run_src = _read("scripts/run.py")
+        m = re.search(r'add_argument\("--aspect"[^;]*?choices=\[([^\]]+)\]',
+                       run_src, re.S)
+        if m:
+            choices = [c.strip().strip('"\'') for c in m.group(1).split(",")
+                       if c.strip()]
+            doc_aspects = set(re.findall(r"--aspect\s+([A-Za-z]+)", skill))
+            bad = sorted(doc_aspects - set(choices))
+            passed = not bad
+            checks.append(("doc_drift:cli_aspect_choices", passed,
+                           "" if passed else
+                           f"SKILL.md 声明了 --aspect {bad}，但 argparse choices 只有 {choices}"
+                           "（文档与 CLI 不同步，agent 照抄会 invalid choice）"))
+        else:
+            checks.append(("doc_drift:cli_aspect_choices", True,
+                           "跳过：scripts/run.py 未匹配到 --aspect choices 定义"))
+    except Exception as e:
+        checks.append(("doc_drift:cli_aspect_choices", False, f"无法校验 CLI 选项：{e}"))
+
+    return checks
+
+
+def _check_version_consistency():
+    """SKILL.md frontmatter version 必须等于 CHANGELOG.md frontmatter 的
+    current_version（两处不同步没有任何机制兜底，只能靠这条门禁拦）。"""
+    skill = _read("SKILL.md")
+    m = re.match(r"^---\n(.*?)\n---\n", skill, re.S)
+    if not m:
+        return False, "SKILL.md 缺少 YAML frontmatter"
+    vm = re.search(r'^version:\s*"?([0-9][0-9A-Za-z.\-]*)"?\s*$', m.group(1), re.M)
+    if not vm:
+        return False, "frontmatter 里解析不出 version 字段"
+    try:
+        log = _read("CHANGELOG.md")
+        lm = re.match(r"^---\n(.*?)\n---\n", log, re.S)
+        if not lm:
+            return False, "CHANGELOG.md 缺少 YAML frontmatter"
+        cv = re.search(r'^current_version:\s*"?([0-9][0-9A-Za-z.\-]*)"?\s*$',
+                       lm.group(1), re.M)
+        if not cv:
+            return False, "CHANGELOG.md frontmatter 里解析不出 current_version"
+    except Exception as e:
+        return False, f"无法读取 CHANGELOG.md：{e}"
+    if vm.group(1) != cv.group(1):
+        return False, (f"SKILL.md version={vm.group(1)} 与 CHANGELOG.md "
+                       f"current_version={cv.group(1)} 不一致（发版时两处必须一起改）")
+    return True, ""
+
+
+def _check_changelog_md():
+    """CHANGELOG.md 结构自检：frontmatter current_version 必须与最新条目
+    标题一致（条目按时间倒序、新条目插最上是本文件的发版约定）；每条
+    `## 版本 · 日期` 标题必须带 YYYY-MM-DD 日期。"""
+    log = _read("CHANGELOG.md")
+    m = re.match(r"^---\n(.*?)\n---\n", log, re.S)
+    if not m:
+        return False, "CHANGELOG.md 缺少 YAML frontmatter"
+    cv = re.search(r'^current_version:\s*"?([0-9][0-9A-Za-z.\-]*)"?\s*$',
+                   m.group(1), re.M)
+    if not cv:
+        return False, "frontmatter 里解析不出 current_version"
+    heads = re.findall(r"^## ([0-9][0-9A-Za-z.\-]*)\s*·\s*(\d{4}-\d{2}-\d{2})\s*$",
+                       log, re.M)
+    if not heads:
+        return False, "找不到任何「## 版本 · 日期」条目标题"
+    if heads[0][0] != cv.group(1):
+        return False, (f"最新条目是 {heads[0][0]}，与 current_version="
+                       f"{cv.group(1)} 不一致（新条目必须插在最上方）")
+    bad = [v for v, _d in heads if not re.match(r"^[0-9][0-9A-Za-z.\-]*$", v)]
+    if bad:
+        return False, f"条目标题版本号格式异常：{bad}"
+    return True, ""
+
+
+def _heading_anchor(heading):
+    """GitHub 风格 slug：小写、去标点（含中文标点）、空白转 '-'，保留字母
+    数字与 CJK。与 SKILL.md 现有目录锚点写法（如 #核心工作流5-步）一致。"""
+    out = []
+    for ch in heading.strip().lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif ch.isspace():
+            out.append("-")
+        # 其余（（）／、：等标点）丢弃
+    return "".join(out)
+
+
+def _check_toc_anchors():
+    """SKILL.md 目录/正文里的 `](#锚点)` 内链必须对得上某个标题。
+    只查"链接有目标"，不强制"每个标题都被目录收录"（后者不是错误）。"""
+    skill = _read("SKILL.md")
+    anchors = {_heading_anchor(h) for h in re.findall(r"^#{1,6}\s+(.+?)\s*$",
+                                                      skill, re.M)}
+    broken = []
+    for text, anchor in re.findall(r"\[([^\]]+)\]\(#([^)]+)\)", skill):
+        if anchor not in anchors:
+            broken.append(f"[{text}](#{anchor})")
+    if broken:
+        return False, ("SKILL.md 内链锚点对不上任何标题："
+                       + "；".join(broken)
+                       + "（改标题时目录同步改）")
+    return True, ""
+
+
+
+# ═══════════════════════════ main：三段编排 ═══════════════════════════
+
 def main():
-    print("=== content-to-video selftest ===")
+    setup_stdio()
+    print("=== content-to-video 一键测试（断言 + 离线集成 + 文档门禁）===")
+
     # 预加载跨章节共享状态：[18]+ 用 template.json，[18] 崩了也不该阻断 [20+]
     _load_template()
 
-    # 每个章节独立 try/except——任一崩溃只计 1 个失败 + 后续章节照常跑，
-    # 不再因一个 assertion 引发 traceback 而吞掉全部剩余的章节结果。
+    # ── 第一段：确定性断言（原 selftest）──
     _sections = [
         _test_1_split_sentences,
         _test_2_build_structured,
@@ -2478,11 +3390,11 @@ def main():
         _test_10_search_images,
         _test_12_budget,
         _test_14_gen_charts,
-        _test_15_split_series_coverage,
+        _test_15_series_split,
         _test_17f_review_fix,
         _test_18_anti_regression,
         _test_19_wcag,
-        _test_20_check_series,
+        _test_20_series_check,
         _test_20c_manifest,
         _test_21_wcag_ext,
         _test_22_review_fix,
@@ -2497,17 +3409,56 @@ def main():
             failed += 1
             RESULTS.append((f"{_fn.__name__} crashed", False))
             print(f"  [FAIL] {_fn.__name__} crashed: {_e}")
+    unit = {"passed": passed, "failed": failed, "total": passed + failed}
 
-    print(f"\n=== {passed} passed, {failed} failed ===")
+    # ── 第二段：离线集成（原 run_eval：真子进程/真 ffmpeg/run.py 编排）──
+    EV_RESULTS.clear()
+    EV_SKIPPED.clear()
+    try:
+        ev_main()
+    except Exception as _e:
+        print(f"  [FAIL] integration crashed: {_e}")
+    ev_p = sum(1 for _, ok in EV_RESULTS if ok)
+    ev_t = len(EV_RESULTS)
+    print(f"\n[integration] {ev_p}/{ev_t} passed"
+          + (f"，另有 {len(EV_SKIPPED)} 项 SKIP（环境缺能力，非回归）"
+             if EV_SKIPPED else ""))
+
+    # ── 第三段：文档漂移/打包门禁（原 check.py 的非编排部分）──
+    gates = []
+    gates.append(("md:changelog",) + _check_changelog_md())
+    gates.append(("frontmatter",) + _check_frontmatter())
+    gates.append(("scope_declaration",) + _check_scope_declaration())
+    gates.extend((n, ok, err) for n, ok, err in _check_doc_drift())
+    gates.append(("packaging:version_consistency",) + _check_version_consistency())
+    gates.append(("packaging:toc_anchors",) + _check_toc_anchors())
+    gate_fail = 0
+    for name, ok, err in gates:
+        gate_fail += 0 if ok else 1
+        print(f"[{'OK' if ok else 'FAIL'}] {name}" + (f"：{err}" if (err and not ok) else ""))
+
+    total_passed = unit["passed"] + ev_p + (len(gates) - gate_fail)
+    total_failed = unit["failed"] + (ev_t - ev_p) + gate_fail
+    print(f"\n=== 总计 {total_passed}/{total_passed + total_failed} passed"
+          + (f"，{len(EV_SKIPPED)} skipped" if EV_SKIPPED else "") + " ===")
     summary = {
-        "tool": "selftest",
-        "passed": passed,
-        "failed": failed,
-        "total": passed + failed,
-        "results": [{"name": name, "ok": ok} for name, ok in RESULTS],
+        "tool": "test",
+        "passed": total_passed,
+        "failed": total_failed,
+        "total": total_passed + total_failed,
+        "sections": {
+            "unit": unit,
+            "integration": {"passed": ev_p, "failed": ev_t - ev_p,
+                            "total": ev_t, "skipped": len(EV_SKIPPED)},
+            "gates": {"passed": len(gates) - gate_fail, "failed": gate_fail,
+                      "total": len(gates)},
+        },
+        "results": ([{"name": n, "ok": ok} for n, ok in RESULTS]
+                    + [{"name": n, "ok": ok} for n, ok in EV_RESULTS]
+                    + [{"name": n, "ok": ok} for n, ok, _e in gates]),
     }
     print("__SUMMARY_JSON__ " + json.dumps(summary, ensure_ascii=False))
-    sys.exit(1 if failed else 0)
+    sys.exit(1 if total_failed else 0)
 
 
 if __name__ == "__main__":

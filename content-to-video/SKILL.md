@@ -1,7 +1,7 @@
 ---
 name: content-to-video
 description: 把任意信息源（粘贴的文本/笔记、上传的文档、网页链接、结构化资讯 API）自动转成带字幕、配图和动效的解说视频——当前对话模型提炼要点写稿，逐句 TTS 配音，Hyperframes 渲染成片。适用于"把这份 PDF/文章/会议纪要/读书笔记做成讲解视频"、"做一期资讯播报"、"日报视频"、"把讲义做成系列短视频"等需求。触发词包括"把……做成视频"、"视频讲解/播报"、"资讯视频"、"帮我出个视频版"等；只要意图是输入一批文字/资料、输出一条配音字幕视频，就应使用本技能。
-version: "1.5.64"
+version: "1.5.77"
 ---
 
 # 信源转视频（Content-to-Video）
@@ -25,13 +25,16 @@ version: "1.5.64"
 ## 项目结构
 
 按"谁会用到这个文件"分层：`scripts/` 是行为（代码），`config/` 是渲染用的配置
-数据，`references/` 是**执行本技能时**可能要查的深度参考（agent 面向），`dev/`
-是**维护/迭代本技能时**才用得到的东西（人类维护者面向，不影响任何一次视频制作）。
+数据，`references/` 是**执行本技能时**可能要查的深度参考（agent 面向）；
+`test.py` + `CHANGELOG.md` 是**维护/迭代本技能时**才用得到的（人类维护者
+面向，不影响任何一次视频制作，平时不用读）。
 
 ```text
 content-to-video/
 ├── SKILL.md                            核心工作流入口（从这里开始读）
 ├── .env.example                        环境变量模板（复制为 .env 后填密钥，不进包）
+├── test.py                             一键测试（确定性断言 + 离线集成 + 文档门禁，改完必跑；仅维护用，不参与制作）
+├── CHANGELOG.md                        版本变更记录（发版时与 frontmatter version 同步，仅维护用）
 ├── scripts/                            运行时脚本（下划线 _* 为内部共享模块，不直接调用）
 │   ├── run.py                           一键编排：串联 TTS→配图→HTML→校验→渲染，输出制作报告
 │   ├── pipeline.py                      第 3 步 TTS 管线（合成/变速/断点续跑/timing_manifest）
@@ -43,36 +46,27 @@ content-to-video/
 │   ├── verify_render.py                 第 5 步 渲染后 时长/编码 校验
 │   ├── render_watch.py                  渲染命令解析辅助（run.py 内部用）
 │   ├── budget.py                        可选：时长预算（plan/estimate）
-│   ├── split_series.py                  可选：长文档 → 多集 segments 骨架
-│   ├── check_series.py                  可选：系列跨集参数一致性检查
+│   ├── series.py                        可选：split=长文档→多集 segments 骨架 / check=系列跨集参数一致性
 │   ├── preview.js                       可选：浏览器预览（仅人工看，渲染/校验不受影响）
-│   ├── selftest.py                      确定性冒烟测试（改脚本后跑，不联网不调 API）
 │   └── _*.py                            内部共享模块：_env/_contracts/_audio/_tts/_voices/_theme/_template/_titles/_assets/_ffmpeg/_script_utils
 ├── config/                             渲染配置数据（与 scripts/ 分离：这是数据不是代码）
-│   ├── theme_registry.json              配色主题（cream/dark/tech/alert，单文件装全部主题）
-│   └── template.json  布局参数（标题/字幕/配图位置尺寸，横竖屏两套）
+│   ├── theme_registry.json              配色主题（cream/dark，单文件装全部主题）
+│   └── template.json  布局参数（横竖屏两套）+ 叙事模式预设（modes 块，chapter/flow 的全部版式差异定义面）
 ├── references/                         深度参考，按需查阅，非必读
-│   ├── pitfalls.md                      18 条踩坑记录（首次执行前建议通读）
-│   ├── internals.md                     内部机制速览：数据流/路径解析/缓存（排查诡异路径/缓存问题时查）
+│   ├── pitfalls.md                      历次踩坑记录 + 内部机制速览（首次执行前建议通读；排查路径/缓存问题查文末机制节）
 │   ├── rendering.md                     第 5 步 主题语义/动画/渲染调参（fps/workers/--gpu/--quality）
 │   ├── image_options.md                 第 4 步 配图方式 A/B/C/D 配置
 │   ├── tts_pipeline.md                 第 3 步 TTS 管线参数表/音色表/manifest 格式
 │   ├── script_format.md                第 2 步 segments_source.json 字段规范（完整语义/兜底行为）
 │   ├── sources.md                       信源（aihot/文档/网页/笔记）接入方式
 │   └── content_templates.md             更多内容类型举例（评测/周报/播客/书评/财报）
-└── dev/                                维护/迭代本技能用，不参与任何一次制作
-│   ├── check.py                         一键 gate（selftest+run_eval+JSON/frontmatter/doc_drift）
-│   ├── run_eval.py                      离线集成测试（静音+ffmpeg 代替，秒级跑完）
-│   ├── evals.json                       10 条 agent 行为评估用例（另一 agent 作 grader）
-│   ├── changelog.json                   版本变更记录（最近 5 条完整）
-│   ├── changelog-archive.md             更早版本的压缩归档（版本/日期/一句话摘要）
 ```
 
 ## 环境准备
 
 ### 依赖安装
 
-- Python 3.9+（含 pip）——全部脚本只用 3.8 兼容语法，实测 Python 3.11 下 `selftest.py` 全绿；不要凭印象抬高版本门槛。环境自检跑 `python scripts/pipeline.py --check-env`，以它的输出为准
+- Python 3.9+（含 pip）——全部脚本只用 3.8 兼容语法，实测 Python 3.11 下 `test.py` 全绿；不要凭印象抬高版本门槛。环境自检跑 `python scripts/pipeline.py --check-env`，以它的输出为准
 - Node.js 22+（含 npm）—— Hyperframes CLI 通过 `npx`/`npm` 使用，渲染步骤必需（当前版 Hyperframes CLI 明确要求 Node.js 22+，18.x 已不支持；`--check-env` 会校验版本号）
 
 缺少 Python 依赖时**先检测再安装**，不要盲目整包安装：
@@ -113,7 +107,7 @@ STEPFUN_API_KEY=xxxxx
 
 > **分发安全**：本技能仓库内只保留 `.env.example`（占位模板，无真实密钥）。真实密钥只应放在 `~/.config/ai-video/.env`（或系统环境变量），**分享/打包本技能时不要携带任何含真实密钥的 `.env` 文件**。
 
-> **首次执行前必读**：`references/pitfalls.md` 收录了 18 条踩坑记录（内部机制速览已独立为 `references/internals.md`），**建议在跑下方工作流前先通读一遍**，遇到报错/异常现象时再按需回查。
+> **首次执行前必读**：`references/pitfalls.md` 收录了历次踩坑记录，文末附内部机制速览（数据流/路径/缓存），**建议在跑下方工作流前先通读踩坑部分**，遇到报错/异常现象时再按需回查。
 
 ## 核心工作流（5 步）
 
@@ -263,7 +257,7 @@ python scripts/pipeline.py --source segments_source.json -o audio_output
 **规则**：
 1. 顶层 `speakers` 是 `dialogue` 段落的前提——每个在 `dialogue` 里出现的 `speaker` key 都必须在这里声明 `voice_id`（必填，从"预置音色列表"（见 `references/tts_pipeline.md`）选两个反差明显的音色，比如一男一女）；`voice_style`/`label` 可选，`label` 是画面上显示的说话人名（不传则直接显示 speaker key）。
 2. 同一段里可以有任意轮次，`text` 和 `dialogue` 二选一，不要同时给。每轮独立分句（跟普通段落的分句规则一样：以 `。！？` 收尾、每句 15-35 字），轮次之间不要求句数对等。
-3. 一个段落里的对话会自动拼进同一条字幕时间轴，两位说话人交替时字幕上方会叠一行说话人标签、按说话人变色，不需要额外配置。**字幕配色按说话人首次出现顺序从 6 色板取色、取完循环**（浅色/深色主题各配一套 6 色），设计上面向多人对话；同一段里出现超过 6 个不同 speaker 时颜色才会复用，此时靠说话人标签文字本身区分。
+3. 一个段落里的对话会自动拼进同一条字幕时间轴，两位说话人交替时字幕上方会叠一行说话人标签、按说话人变色，不需要额外配置。**字幕配色按说话人首次出现顺序从说话人色板取色、取完循环**（浅色/深色字幕栏各一套，色值见 `config/template.json` 的 `speaker` 块），设计上面向多人对话；同一段里 speaker 数超过色板大小时颜色才会复用，此时靠说话人标签文字本身区分。
 4. 段落级的 `voice_id`/`voice_style`/`accent`/`tagline`/`title`/`body`/图片 都还是按整段生效，只有"这一句该用谁的声音念"细化到了轮次级别——所以对话段落照样可以配一张图（第 4 步），照样有标题和 tagline。
 5. 不是所有段落都要用对话——精选摘要模式的播报类段落通常还是单人 `text` 更合适，对话适合需要"来回追问-讲清楚"的知识点；同一期视频里对话段落和单人段落可以混用。
 
@@ -271,7 +265,7 @@ python scripts/pipeline.py --source segments_source.json -o audio_output
 
 脚本位于本技能目录下的 `scripts/pipeline.py`，直接传 `--source segments_source.json`：
 
-> **记住一件事：反复调试时始终加 `--resume`**，已生成且时长有效的音频不会重新调用 API，省时间也省额度。缓存/断点续跑的内部机制见 `references/internals.md`，日常用不到。
+> **记住一件事：反复调试时始终加 `--resume`**，已生成且时长有效的音频不会重新调用 API，省时间也省额度。缓存/断点续跑的内部机制见 `references/pitfalls.md` 文末「内部机制速览」节，日常用不到。
 
 ```bash
 python scripts/pipeline.py \
@@ -312,6 +306,8 @@ python scripts/pipeline.py \
 | 具体数据/数字（营收、增长率、占比、排行；财报解读典型） | **C 图表** | 真实数据画的图表比意象图/资料照片更有说服力 |
 
 拿不准或内容混合两种类型时按段落分别判断，同一期里不同段落可以走不同方式（`images.json` 是按 segment id 映射的，天然支持混用）。每类的判断细节与反例（公式为什么不能交给动画/ImageGen、文搜图对抽象概念为什么文不对题等）见 `references/image_options.md`「配图路由」节；动画时长选择、多段关联动画一致性、额度降级细则见同文件方式 D 节；更多具体内容类型举例见 `references/content_templates.md`。
+
+> **配图比例原则（四种方式统一）**：图框横竖屏统一是 √2:1（读模板 `layout.*.image.aspect`），主流素材比例里 **4:3 最接近**（contain 填充率约 94%；16:9 约 80%、1:1 约 71%、竖图更低）——四种方式统一向 **4:3 横版**靠拢：方式 A 审图时优先选 4:3/横版候选（`candidates.json` 带每张宽高，竖图 contain 后大量留白、慎选）；方式 B 固定 `landscape_4_3`；方式 C 画布 4:3；方式 D 生成视频选横版比例。填充率数据与依据见 `references/image_options.md`「配图比例原则」节。
 
 1. **方式 A：StepFun 文搜图**（`scripts/search_images.py`，按标题搜真实图片，零生成额度，只需要 `STEPFUN_API_KEY`）。脚本先下载每条的多张候选（默认 3 张）并输出 `candidates.json`（含图片摘要和本地重合度 score 提示）——**由当前对话窗口的模型审阅判断哪张贴合主题**，再用 `--pick` 指定采用（`0`=不采用，改 ImageGen 生图）。不依赖任何外部对话模型，没有 402/额度问题。按路由只有部分段落走方式 A 时，用 `--sids "seg1,seg3"` 只搜这些段落，其余段落留给方式 B/C/D（`run.py` 对应透传参数 `--search-sids`）。
 2. **方式 B：ImageGen 生图**（每张图约消耗 5-10 credits，用之前需要提醒用户）。抽象概念类内容（知识讲解、原理拆解、论文/PDF 内容）默认走这条；有真实对应实体的内容（新闻播报、产品评测）在文搜图没有合适候选时回退到这条。`run.py` 遇到缺图会停下并提示先审阅候选、`--pick` 或生图。
@@ -373,19 +369,19 @@ python scripts/gen_hyperframes.py \
 
 **竖屏（`--aspect portrait`，3:4）**：默认输出 1920×1080 横屏（`landscape`）。传 `--aspect portrait` 切到 1080×1440 竖屏——**这是唯一的竖屏画幅**（内部 `data-aspect` 写 `vertical`，全部竖屏 CSS 规则命中），紧凑留白：顶部 100px、底部 80px、图片槽统一 4:3（1:1 方图加 300px 句子流在 1440 高度里放不下），标题位置、图片尺寸、句子流钉底方式等布局整体按竖屏适配，不需要额外传 `--width`/`--height`。适用场景是抖音/快手等沉浸式竖屏 feed 的**裁切规避**：这些平台对标准 9:16 视频会按高度铺满裁掉两侧（20:9 屏每侧约 118-135px），50px 侧边距的内容必被裁；3:4 不是标准 9:16，平台会按宽度适配保留完整画面（上下留边）。选 portrait 就意味着接受"两侧完整、上下留边"的观感，适合信息密度高、两侧内容不可裁的竖屏内容。
 
-**竖屏配图策略：内容段落优先全覆盖配图**。竖屏是三段式排布（标题在上、配图居中、字幕在下），有图段画面饱满；无图段只剩标题和一张要点卡片，先天单薄。因此选竖屏画幅时，第 4 步配图应按「每个内容段落都有图」来规划——即使内容性质偏概念/数据（横屏可只用图表或干脆不配图的段落），竖屏也应至少配一张示意图/图表。真无法配图的过渡性段落（如收尾悬念段）才允许无图，渲染器会用居中要点卡片兜底。额度紧张时按第 4 步路由优先级保内容主干段，删减次要段配图。
+**竖屏配图策略：内容段落优先全覆盖配图**。竖屏是三段式排布（标题在上、配图居中、字幕在下），有图段画面饱满；无图段只剩标题和一张要点卡片，先天单薄。因此选竖屏画幅时，第 4 步配图应按「每个内容段落都有图」来规划——即使内容性质偏概念/数据（横屏可只用图表或干脆不配图的段落），竖屏也应至少配一张示意图/图表。真无法配图的过渡性段落（如收尾悬念段）才允许无图，渲染器会用居中要点卡片兜底。额度紧张时按第 4 步路由优先级保内容主干段，删减次要段配图。开场/收尾页配图：`images.json` 写 `"opening"`（或 `"closing"`）键即生效，值格式与内容段一致——竖屏开场页即从「标题+预告+句子流」变为「标题+图+句子流」（预告/正文自动让位于图，垂直预算装不下并存），横屏走既有配图段版式、开场预告保留。**竖屏 flow 模式（portrait/both + 稿件 `"flow": true`）开场封面图默认必配、无需手动开启**（1.5.67 起）：flow 开场只有轻量 chips 预告，第 4 步配图规划里包含一张 ImageGen 点题封面图（风格与内容段配图一致），`run.py` 对缺 `opening` 映射的制作直接拦截提示、`gen_hyperframes.py` 分步执行时打 warn；仅配图来源全部不可用（纯文字版兜底）时才允许无图开场。**竖屏章节（正常）模式开场保持目录（agenda 本身就是画面主体），无配图义务**；`closing` 与横屏 `opening` 仍可选。
 
 **一次性生成横竖屏两个版本（`--aspect both`）**：需要同时发布横屏（B站）和竖屏（抖音/小红书）平台时，不用把命令跑两遍——`--aspect both` 会一次性输出两套文件：HTML 层面 `-o` 指定的路径本身是横屏版，竖屏版文件名在此基础上自动插入 `.vertical` 后缀（如 `index.html` + `index.vertical.html`）；走 `run.py` 一键编排时会分别渲染两个成片——`out.mp4`（横屏）与 `out.vertical.mp4`（竖屏），并逐个用 `verify_render.py` 校验。
 
 **字幕/内容呈现模式（按画幅绑定，没有 `--sub-mode` 选项）**：同一份口播稿/配图/cue 数据，两种画面呈现。**横屏固定 `bar`、竖屏（portrait）固定 `verse`**，不可选：
 - `verse` = **歌词式句子流**（竖屏唯一形态）：段落全部句子静态渲染，当前句高亮加粗、已播句淡出，窗口随播报平滑滚动；有图段的正文要点卡片隐藏（正文信息由句子流逐句完整呈现），无图段保留要点卡片兜底；说话人不显示（cue 数据层保留 speaker/spk 字段，导出 SRT 仍带 `[说话人]` 前缀）。窗口钉在内容区底部（高与内边距读模板 `verse` 块）。
-- `bar` = **经典形式**（横屏唯一形态）：底部字幕条（当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示（正文字号 38 小于字幕 46，口播字幕是画面主导文字）；双人对话在字幕条上方显示说话人标签（颜色按字幕条背景亮度自适应深/浅配色）。
+- `bar` = **经典形式**（横屏唯一形态）：底部字幕条（当前句随播报切换、多行错峰淡入）+ 正文要点卡片始终显示（正文字号小于字幕字号，口播字幕是画面主导文字——具体值见模板 `layout` 块的 body/subtitle 字号）；双人对话在字幕条上方显示说话人标签（颜色按字幕条背景亮度自适应深/浅配色）。
 
 怎么选：模式与画幅绑定、不需要选——想要 bar 的"完整要点清单常驻 + 说话人身份可见"（教学步骤、操作指南、双人对话）就用横屏出片；竖屏沉浸式 feed 内容选 portrait。
 
-**主题配色（`--theme`）**：默认 `cream`（米白色科技风：暖米白背景 + 冷蓝灰网格线 + 石墨黑文字）。当前可选 `cream` / `dark` / `tech` / `alert`（`config/theme_registry.json` 是唯一权威来源，加新主题只改这一处，CLI 的 `--theme` choices 会自动同步，不会出现"改了注册表、命令行还报不认识这个选项"的漂移）。只影响背景渐变/网格线/正文文字/body 背景色/句子流文字色，不影响每段的 accent 强调色。
+**主题配色（`--theme`）**：默认 `cream`（米白色科技风：暖米白背景 + 冷蓝灰网格线 + 石墨黑文字）。当前可选 `cream` / `dark` 两个（1.5.68 奥卡姆剃刀：原 tech 与 dark 观感难分、并入 dark，原 alert 语义过窄、删除——警示感用红色 accent 表达；`config/theme_registry.json` 是唯一权威来源，加新主题只改这一处，CLI 的 `--theme` choices 会自动同步，不会出现"改了注册表、命令行还报不认识这个选项"的漂移）。只影响背景渐变/网格线/正文文字/body 背景色/句子流文字色，不影响每段的 accent 强调色。
 
-> **按内容基调选主题**：四个主题各适配哪类内容、由当前对话模型在写稿阶段凭语义判断，以及"逐条内容的版式变体尚不支持单独指定"的说明，见 `references/rendering.md`。
+> **按内容基调选主题**：两个主题各适配哪类内容、由当前对话模型在写稿阶段凭语义判断，以及"逐条内容的版式变体尚不支持单独指定"的说明，见 `references/rendering.md`。
 
 > 若 manifest 不含 `segments` 字段（只有手写 manifest 才会发生——pipeline 产出的 manifest 一定带），`gen_hyperframes.py` 会自动按每 5 句一组生成段落（id 为 `seg1`/`seg2`/...，accent 统一取调色板默认色——以 `config/theme_registry.json` 的 `_accent_palette` 首色为准，不要在这里写死数值）。这是兜底行为，没有正确的标题和 accent 配色，正式制作不要依赖。
 
@@ -469,8 +465,7 @@ python scripts/run.py --source segments_source.json -o audio_output --no-images 
 
 均为按需查阅、非必读（首次执行前建议先通读 `references/pitfalls.md`）：
 
-- `references/pitfalls.md` — 18 条踩坑记录；日常制作不必逐条看，遇到报错或异常现象时按需回查
-- `references/internals.md` — 内部机制速览：数据流全景 / 路径解析速记 / 缓存与断点续跑（排查诡异路径/缓存问题时查阅）
+- `references/pitfalls.md` — 历次踩坑记录 + 文末「内部机制速览」节（数据流全景/路径解析/缓存续跑）；日常制作不必逐条看，遇到报错或异常现象时按需回查
 - `references/tts_pipeline.md` — 第 3 步 TTS 管线参数、预置音色、manifest 格式
 - `references/script_format.md` — 第 2 步 segments_source.json 全部字段的语义与缺省兜底行为
 - `references/image_options.md` — 第 4 步 配图方式 A/B/C/D 配置与配图路由展开

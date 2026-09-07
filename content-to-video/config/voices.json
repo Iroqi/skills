@@ -1,0 +1,4 @@
+{
+  "_meta": "MiMo TTS 预置音色注册表（唯一权威数据源，_voices.py 只负责加载与校验）。增删音色只改这里，CLI choices 与 _contracts 校验自动跟进。",
+  "voice_ids": ["冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"]
+}

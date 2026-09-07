@@ -1,7 +1,23 @@
 {
   "name": "default",
-  "description": "Standard layout - badge + title + body/image + subtitle bar",
-  "version": "1.1.0",
+  "description": "Standard layout - badge + title + body/image + subtitle bar; modes block defines chapter/flow narrative presets",
+  "version": "1.2.0",
+  "modes": {
+    "chapter": {
+      "numbered": true,
+      "openingPreview": "agenda",
+      "closingRecap": true,
+      "transition": "wipe",
+      "verticalOpeningCover": false
+    },
+    "flow": {
+      "numbered": false,
+      "openingPreview": "chips",
+      "closingRecap": false,
+      "transition": "crossfade",
+      "verticalOpeningCover": true
+    }
+  },
   "layout": {
     "landscape": {
       "badge": {
@@ -250,5 +266,16 @@
     "bodyBorderRadius": 16,
     "bodyBorderLeft": 4,
     "imageBorderRadius": 24
+  },
+  "subtitle": {
+    "_meta": "字幕切分参数（_script_utils.subtitle_params_for 消费）。maxChars=单行目标宽度（字符，按画幅物理宽度/字号推导：竖屏 980px/40px≈22 字、横屏 870px/46px≈28 字）；hardCap=次要标点切不动时的字符级硬切上限；cueMaxLines=每屏行数（bar 模式 ≤2 防盖正文卡，verse 整句渲染故 99）。",
+    "landscape": { "maxChars": 28, "hardCap": 34, "cueMaxLines": 2 },
+    "vertical": { "maxChars": 22, "hardCap": 22, "cueMaxLines": 99 }
+  },
+  "speaker": {
+    "_meta": "双人对话说话人配色（gen_hyperframes 消费，selftest [21] 做 WCAG 对比度断言）。colorsOnLight=浅字幕栏（cream）配深色系、colorsOnDark=深字幕栏（dark）配浅色系，运行时按字幕栏明暗二选一、按说话人顺序循环取色；agendaNumText=agenda 序号圆数字色（叠在各段 accent 圆底上，对 8 色板对比度 5.5-13.8）。改色后跑 selftest 验证对比度。",
+    "colorsOnLight": ["#1d4ed8", "#b45309", "#047857", "#7c3aed", "#be123c", "#0e7490"],
+    "colorsOnDark": ["#7dd3fc", "#fbbf24", "#6ee7b7", "#c4b5fd", "#fda4af", "#67e8f9"],
+    "agendaNumText": "#0a0e14"
   }
 }

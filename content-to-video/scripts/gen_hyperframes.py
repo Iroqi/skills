@@ -43,7 +43,7 @@ from urllib.parse import quote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _theme import (get_theme_colors, get_default_accent, list_theme_names,  # noqa: E402
                     darken, relative_luminance, mix, expand_hex)
-from _template import load_template  # noqa: E402
+from _template import load_template, get_mode_preset  # noqa: E402
 from _assets import ensure_local_gsap, GSAP_CDN_URL  # noqa: E402
 from _contracts import (load_timing_manifest, validate_images_json,  # noqa: E402
                         classify_media_path, is_content_sid)
@@ -156,17 +156,15 @@ def _segment_duration(seg):
             - sents[0].get("start_time", 0))
 
 
-# 说话人字幕配色（叠在字幕栏 sub_bar 上）。按字幕栏明暗二选一组：
-# 浅字幕栏（cream）配深色系、深字幕栏（dark/tech/alert）配浅色系。
-# 收口为模块级常量供 selftest [21] 做 WCAG 对比度断言（单一数据源，
-# 改这里测试自动跟进）。
-SPK_COLORS_ON_LIGHT = ["#1d4ed8", "#b45309", "#047857", "#7c3aed", "#be123c", "#0e7490"]
-SPK_COLORS_ON_DARK = ["#7dd3fc", "#fbbf24", "#6ee7b7", "#c4b5fd", "#fda4af", "#67e8f9"]
-# agenda 序号圆里的数字色（叠在各段 accent 色圆底上）。深色数字在色板
-# 8 色 accent（相对亮度 0.246-0.697）上对比度 5.5-13.8，序号字号为
-# numSize 的一半（横竖屏 30/26px bold，WCAG 大字 AA 3.0）余量充足。
-# 同样收口供 selftest 断言，防未来被改成低对比色。
-AGENDA_NUM_TEXT_COLOR = "#0a0e14"
+# 说话人字幕配色（叠在字幕栏 sub_bar 上）与 agenda 序号圆数字色：
+# 数据定义在 config/template.json 顶级 speaker 块（JSON 定义、py 生产），
+# 这里只负责装载成模块常量——selftest [21] 引用这些名字做 WCAG 对比度
+# 断言（单一数据源，改 JSON 测试自动跟进）。运行时按字幕栏明暗二选一：
+# 浅字幕栏（cream）配深色系、深字幕栏（dark）配浅色系。
+_spk_cfg = load_template()["speaker"]
+SPK_COLORS_ON_LIGHT = _spk_cfg["colorsOnLight"]
+SPK_COLORS_ON_DARK = _spk_cfg["colorsOnDark"]
+AGENDA_NUM_TEXT_COLOR = _spk_cfg["agendaNumText"]
 
 
 def generate_html(manifest, audio_src, images=None,
@@ -198,7 +196,7 @@ def generate_html(manifest, audio_src, images=None,
             portrait 复用竖屏布局家族（内部 data-aspect 写 "vertical"，
             全部竖屏 CSS 规则照常命中）。
         theme: 主题配色（可选值以 config/theme_registry.json 为唯一权威来源，
-            当前 cream/dark/tech/alert），影响背景渐变、
+            当前 cream/dark），影响背景渐变、
             网格、正文文字与 body 背景色，不影响每段 accent 彩色。
         fps: 输出帧率提示（写入 data-fps，渲染命令可用 --fps 覆盖；
             默认 24 比 30 少抓 20% 帧、渲染更快）。
@@ -265,7 +263,7 @@ def generate_html(manifest, audio_src, images=None,
     _dark_theme = _theme_lum is not None and _theme_lum > 0.5
 
     # 对话说话人配色（bar 模式显示层）：不能固定"深色底"，因为字幕栏
-    # 背景（sub_bar_rgb）随主题变——cream 是近白底、dark/tech/alert 是
+    # 背景（sub_bar_rgb）随主题变——cream 是近白底、dark 是
     # 深色底。按字幕栏背景相对亮度动态选一组有足够对比度的配色（浅底
     # 深色系、深底浅色系），按说话人首次出现顺序取色、取完循环，支持
     # 3+ 说话人。verse 模式句子流不区分说话人，仅保留 cue 数据层的
@@ -294,8 +292,6 @@ def generate_html(manifest, audio_src, images=None,
 
     _tl = tpl_layout["title"]
     css_title_pad = _tl["padding"]
-    css_news_title_size = f'{_tl["fontSizeNews"]}px'
-    css_opening_title_size = f'{_tl["fontSizeOther"]}px'
 
     _bl2 = tpl_layout["body"]
     css_body_font = f'{_bl2["fontSize"]}px'
@@ -330,9 +326,9 @@ def generate_html(manifest, audio_src, images=None,
     css_sub_max = _sl.get("maxWidth", 1600)
 
     # ── 竖屏紧凑参数（--aspect portrait，3:4 即 1080x1440）──
-    # 上下留白收窄 + 图片槽统一 4:3：1:1 方图（980x980）加 300px 句子流
-    # 在 1440 高度里放不下（100+标题139+48+980+300+80 = 1647 溢出），
-    # 4:3 槽（980x735）总高 1402，余 38px 由 verse 的 margin-top:auto 吸收。
+    # 上下留白收窄 + 图片槽比例读模板 image.aspect（当前 1.4142/1，√2:1
+    # 与横屏槽统一——1.5.61 由 4:3 改入；当年收窄图片槽的动机：1:1 方图
+    # 加 300px 句子流在 1440 高度里放不下）。
     # 竖屏只有 verse（bar 在上方已被拦下），无模式分支。
     # 全部参数读模板 vertical 块（segCard.padding / image.aspect /
     # image.marginTop / verse.windowHeight / verse.clipPad），改排版只动
@@ -560,12 +556,13 @@ def generate_html(manifest, audio_src, images=None,
     if not segments:
         segments = fallback_segments(sentences)
 
-    # flow 自然叙事模式（segments_source.json 顶层 "flow": true，pipeline
-    # 透传到 manifest）：不显示段落编号 badge、开场目录不画编号圆、段落
-    # 切换不做 accent 色 wipe 扫场（改用更长的 cross-fade）。适合讲解/
-    # 叙事类主题——内容之间靠写稿的承接句自然过渡，而不是"第 1 条/第 2 条"
-    # 的板块感。手写 manifest 也可以直接设 "flow": true。
-    flow_mode = bool(manifest.get("flow"))
+    # 叙事模式预设（1.5.69 起 template 定义、gen 生产）：config/
+    # template.json 的 modes 块是 flow/章节全部版式差异的唯一定义源
+    # （编号 badge/开场预告形态/收尾回顾默认/段落转场/竖屏开场封面图
+    # 义务），manifest 顶层 "flow": true（pipeline 由 segments_source.json
+    # 透传；手写 manifest 也可以直接设）只负责选 flow 预设。下面所有
+    # 分支只读预设键——模板负责定义，本函数只负责生产。
+    mode_preset = get_mode_preset(manifest)
 
     # Calculate clip timing
     clips = []
@@ -617,19 +614,23 @@ def generate_html(manifest, audio_src, images=None,
         # 会得到非法 8 位颜色、整条 CSS 被浏览器丢弃——统一展开成 6 位
         ac = expand_hex(seg.get("accent", DEFAULT_ACCENT))
         is_news = is_content_sid(sid)
+        # 开场/收尾页也支持配图（images.json 写 "opening"/"closing" 键）：
+        # 竖屏开场页只有标题+预告+句子流时画面偏空（用户反馈"太难看"），
+        # 配图后竖屏为「标题在上 + 图居中 + 句子流钉底」，与内容段同一
+        # 版式语言；竖屏有图时 agenda/closing_body 让位于图（_verse_kills_body
+        # 对 opening/closing 一并生效——垂直预算装不下图与目录/回顾并存）。
+        # 横屏走既有配图段版式（标题左移、图右置）。无图时行为与旧版完全
+        # 一致（开场预告/收尾回顾照常生成）。
         has_image = sid in images
-        # 首页/尾页是全屏居中布局，右侧视频会遮挡文字，跳过配图
-        _is_oc = sid.startswith("opening") or sid.startswith("closing")
-        if _is_oc:
-            has_image = False
 
         # 动画参数快捷引用（从模板加载，替代硬编码数值）
         a_ = tpl_anim
 
-        # Badge（章节编号圆）。flow 自然叙事模式下不显示——编号是"新闻
-        # 条目"的板块语言，叙事/讲解内容的段落之间应该靠承接句自然流动。
+        # Badge（章节编号圆）。预设 numbered=false（flow）时不显示——编号
+        # 是"新闻条目"的板块语言，叙事/讲解内容的段落之间应该靠承接句
+        # 自然流动。
         badge = ""
-        if is_news and not flow_mode:
+        if is_news and mode_preset["numbered"]:
             # 编号用正则提取前缀后的数字：replace 链对 "segment1" 这类 id
             # 会把 "seg" 替掉留下 "ment1"（错误编号）；无数字前缀不渲染 badge
             _num_m = re.match(r"^(?:news|seg)(\d+)", sid)
@@ -720,12 +721,11 @@ def generate_html(manifest, audio_src, images=None,
                     if (is_news or (has_image and aspect == "landscape"))
                     else _tl["topOther"])
         title_top = f"{_top_raw}px" if isinstance(_top_raw, (int, float)) else str(_top_raw)
-        title_transform = ""
 
         # Tagline
         tagline_html = ""
         if seg.get("tagline"):
-            # 深色主题向白提亮（无差别 _darken 在 dark/tech/alert 下
+            # 深色主题向白提亮（无差别 _darken 在 dark 下
             # 对比度只有 ~3.3，不达 WCAG AA）
             _tag_color = (mix(ac, "#ffffff", 0.62) if _dark_theme
                           else darken(ac))
@@ -768,6 +768,19 @@ def generate_html(manifest, audio_src, images=None,
         agenda_count = 0
         recap_count = 0
         numpop_ids = set()
+        # 开场预告与收尾回顾共用同一 chips 视觉语言（渲染分支合一，条件各自判断）：
+        # - 开场：预设 openingPreview == "chips"（flow）时是轻量 chips 一排；
+        #   竖排列表+编号圆是章节模式（"agenda"）的语言。manifest 写
+        #   "agenda": false 可显式关闭。
+        # - 收尾：默认值读预设 closingRecap（flow 为 false：叙事型收尾靠
+        #   closing 稿件本身，chips 的清单语言与叙事气质不符）；manifest 写
+        #   "recap": true 可显式打开。
+        _wants_chips = (
+            (sid == "opening" and content_agenda
+             and mode_preset["openingPreview"] == "chips"
+             and seg.get("agenda", True))
+            or (sid == "closing" and content_agenda
+                and seg.get("recap", mode_preset["closingRecap"])))
         if seg.get("body"):
             # 过滤空行：body 尾部的换行符（手写 manifest 常见）不该渲染出
             # 空的 body-line div 和对应的 GSAP tween。
@@ -804,11 +817,7 @@ def generate_html(manifest, audio_src, images=None,
             else:
                 body_style = ""
             body_html = f'<div class="body-text" id="body-{sid}"{body_style}>{body_items}</div>'
-        elif sid == "opening" and content_agenda and flow_mode and seg.get("agenda", True):
-            # flow 自然叙事模式的开场预告：轻量 chips 一排，
-            # 与收尾页 recap 同一视觉语言——竖排列表+编号圆是章节模式的
-            # 语言，flow 不用。manifest 写 "agenda": false
-            # 可显式关闭。
+        elif _wants_chips:
             chips = [
                 f'<div class="recap-chip" id="recapchip-{sid}-{k}" '
                 f'style="border-color:{item["accent"]}">{esc(item["title"])}</div>'
@@ -843,22 +852,16 @@ def generate_html(manifest, audio_src, images=None,
             _ag_gap = max(10, round(_ag_font * 0.5))  # 行间距等比缩放（≈0.5 行）
             _ag_indent = _al.get("indentLeft", 140)    # 左缩进：把目录从屏幕左缘往右挪
             _ag_mt = _al.get("marginTop", 36)          # 距标题上间距：往上挪给列表留空间
-            # 竖屏下方空间充裕，不再对任何条目做高度限制（之前的两行/单行
-            # 强制槽位都去掉），让条目按内容自然撑开；当前 40px 下 8 条均
-            # 单行，序号圆顶部对齐即可保证行列整齐。
+            # 条目不做高度限制，按内容自然撑开；序号圆顶部对齐保证行列整齐。
             _ag_lh = _al.get("lineHeight", 1.34)
-            _ag_slot = 0
-            _ag_slot_style = f'min-height:{_ag_slot}px' if _ag_slot else ""
             items = [
-                # flow 自然叙事模式下目录不画编号圆（编号是章节模式的语言），
+                # 目录序号圆跟随预设 numbered（编号是章节模式的语言），
                 # 只留标题行；章节模式保持编号圆 + 标题。
-                f'<div class="agenda-item" id="agendaitem-{sid}-{k}"'
-                + (f' style="{_ag_slot_style}"' if _ag_slot_style else "")
-                + '>'
+                f'<div class="agenda-item" id="agendaitem-{sid}-{k}">'
                 + (f'<span class="agenda-num" style="background:{item["accent"]};'
                    f'width:{_ag_num}px;height:{_ag_num}px;'
                    f'font-size:{round(_ag_num * 0.5)}px">{k + 1}</span>'
-                   if not flow_mode else "")
+                   if mode_preset["numbered"] else "")
                 + f'<span class="agenda-title" style="font-size:{_ag_font}px;'
                   f'line-height:{_ag_lh}">'
                   f'{esc(item["title"])}</span>'
@@ -871,20 +874,6 @@ def generate_html(manifest, audio_src, images=None,
                 f'style="margin-top:{_ag_mt}px;margin-left:{_ag_indent}px;'
                 f'gap:{_ag_gap}px">{"".join(items)}</div>'
             )
-        elif sid == "closing" and content_agenda and seg.get("recap", not flow_mode):
-            # 结尾页同理——用"回顾"标签条复述本期内容要点，帮观众加深印象，
-            # 视觉上做成一排 chip 标签（而不是重复开场的竖排列表样式），
-            # 跟开场页拉开视觉差异。flow 模式默认关闭（叙事型收尾靠
-            # closing 稿件本身，chips 的清单语言与叙事气质
-            # 不符）；manifest 写 "recap": true 可显式打开。注意与
-            # opening 的区别：开场预告 flow 下也默认开，收尾回顾不跟着开。
-            chips = [
-                f'<div class="recap-chip" id="recapchip-{sid}-{k}" '
-                f'style="border-color:{item["accent"]}">{esc(item["title"])}</div>'
-                for k, item in enumerate(content_agenda)
-            ]
-            recap_count = len(chips)
-            body_html = f'<div class="recap-chips" id="chiprow-{sid}">{"".join(chips)}</div>'
 
         # Image / video container (right side, vertically centered).
         image_html = ""
@@ -978,10 +967,10 @@ def generate_html(manifest, audio_src, images=None,
             )
         else:
             sub_bar_html = (
-                f'\n    <div class="sub-bar">\n'
-                f'      <div class="sub-speaker"></div>\n'
-                f'      <div class="sub-text"></div>\n'
-                f'    </div>\n'
+                '\n    <div class="sub-bar">\n'
+                '      <div class="sub-speaker"></div>\n'
+                '      <div class="sub-text"></div>\n'
+                '    </div>\n'
             )
         seg_cards.append(
             f'  <div id="{sid}" class="clip seg-card{" has-image" if has_image else ""}" '
@@ -991,7 +980,7 @@ def generate_html(manifest, audio_src, images=None,
             f'style="background:radial-gradient(circle at 50% 50%,{ac}15,transparent 60%)"></div>\n'
             f'    <div class="seg-accent-bar" id="bar-{sid}" style="background:{ac}"></div>\n'
             f'    {badge}\n'
-            f'    <div class="seg-title-wrap" style="{title_transform}left:{title_left};'
+            f'    <div class="seg-title-wrap" style="left:{title_left};'
             f'right:{title_right};width:{title_width};top:{title_top};'
             f'text-align:{title_align};{title_pad_inline}">\n'
             f'      <div class="seg-title" id="title-{sid}" '
@@ -1025,11 +1014,11 @@ def generate_html(manifest, audio_src, images=None,
                 f'duration:{a_first.get("duration", 0.4)}}},{s:.2f})'
             )
         else:
-            if flow_mode:
-                # flow 自然叙事模式：不做 accent 色 wipe 扫场（板块切换的
-                # 视觉语言），只用更长的 cross-fade——上一段的 fade-out 与
-                # 这一段的 fade-in 在边界自然交叠，视觉上"接着讲"而不是
-                # "翻到下一条"。
+            if mode_preset["transition"] == "crossfade":
+                # 预设 transition="crossfade"（flow）：不做 accent 色 wipe
+                # 扫场（板块切换的视觉语言），只用更长的 cross-fade——上一
+                # 段的 fade-out 与这一段的 fade-in 在边界自然交叠，视觉上
+                # "接着讲"而不是"翻到下一条"。
                 _fadein_dur = max(a_fadein.get("duration", 0.3), 0.6)
                 gsap_lines.append(
                     f'tl.fromTo("#{sid}",{{opacity:0}},'
@@ -1353,6 +1342,12 @@ body{{font-family:{css_font_family}}}
 [data-aspect="vertical"] #opening .seg-title-wrap,[data-aspect="vertical"] #closing .seg-title-wrap{{text-align:center!important;margin:auto 0!important}}
 [data-aspect="vertical"] #opening .recap-chips,[data-aspect="vertical"] #closing .recap-chips{{justify-content:center!important}}
 [data-aspect="vertical"] #opening .agenda-list{{margin-left:0!important;padding-left:0}}
+/* 开场/收尾页配图后（images.json 的 opening/closing 键）：标题取消垂直居中、
+   回到卡片顶部锚定——竖屏版式变为「标题在上 + 图居中 + 句子流钉底」，
+   与内容段同一结构语言；自由空间全部由图与句子流之间的 auto-margin 吸收
+   （verse 的 margin-top:auto），标题不再悬在图上方半空。选择器特异性比上面的
+   margin:auto 0 规则高一档（多个 .has-image 类），不依赖书写顺序。 */
+[data-aspect="vertical"] #opening.has-image .seg-title-wrap,[data-aspect="vertical"] #closing.has-image .seg-title-wrap{{margin:0 0!important}}
 [data-aspect="vertical"] .seg-glow{{display:none}}{_v_verse_css}
 
 </style>
@@ -1452,6 +1447,22 @@ def _uncovered_content_sids(manifest, images):
     return [seg.get("id", "") for seg in manifest.get("segments", [])
             if is_content_sid(seg.get("id"))
             and seg.get("id", "") not in images]
+
+
+def _opening_cover_missing(images, aspect, required):
+    """竖屏开场页是否缺封面图（必配与否由模式预设定义）。
+
+    开场封面图不走搜图（search_images 只搜内容段落），由 agent 在第 4 步
+    用 ImageGen 等生成后写 images.json 的 "opening" 键。必配范围按叙事模式
+    分流（用户指定，1.5.67）：flow 模式开场只有轻量 chips 预告，竖屏配图后
+    版式=「标题+图+句子流」更饱满（chips 让位于图）；章节（正常）模式开场
+    的目录（agenda）本身就是画面主体，保持目录、无配图义务——两个预设的
+    verticalOpeningCover 分别为 true/false（1.5.69 起定义在 template.json
+    modes 块，gen 主流程与 run.py 共读同一预设）。横屏开场配图与 closing
+    （两画幅）仍可选。required 由调用方传预设值。
+    """
+    return (aspect in ("portrait", "both") and required
+            and "opening" not in images)
 
 
 def validate_images_files(images, out_dir, seg_durs=None):
@@ -1561,9 +1572,9 @@ def validate_images_files(images, out_dir, seg_durs=None):
             except Exception as e:
                 corrupt_imgs.append((sid, media_path, str(e)))
     if not _pil_available and images:
-        print(f"[warn] Pillow 未安装，跳过配图完整性（损坏/截断）校验，"
-              f"仅做了文件存在性校验。`pip install Pillow` 后可启用完整"
-              f"校验，见 SKILL.md 环境准备", file=sys.stderr)
+        print("[warn] Pillow 未安装，跳过配图完整性（损坏/截断）校验，"
+              "仅做了文件存在性校验。`pip install Pillow` 后可启用完整"
+              "校验，见 SKILL.md 环境准备", file=sys.stderr)
     return missing_imgs, corrupt_imgs
 
 
@@ -1646,13 +1657,13 @@ def main():
                     print(f"[error] 配图文件已损坏/无法解码: segment '{sid}' -> "
                           f"'{rel}'（{reason}）。", file=sys.stderr)
                 if missing_imgs:
-                    print(f"[error] 请检查 images.json 与实际图片文件是否一致"
-                          f"（常见原因：改了图片扩展名/替换图片后未重跑 "
-                          f"gen_hyperframes.py 重新生成 HTML）。", file=sys.stderr)
+                    print("[error] 请检查 images.json 与实际图片文件是否一致"
+                          "（常见原因：改了图片扩展名/替换图片后未重跑 "
+                          "gen_hyperframes.py 重新生成 HTML）。", file=sys.stderr)
                 if corrupt_imgs:
-                    print(f"[error] 请重新下载/生成对应图片后再重跑本脚本"
-                          f"（常见原因：下载中途网络中断、磁盘写满导致文件"
-                          f"截断）。", file=sys.stderr)
+                    print("[error] 请重新下载/生成对应图片后再重跑本脚本"
+                          "（常见原因：下载中途网络中断、磁盘写满导致文件"
+                          "截断）。", file=sys.stderr)
                 sys.exit(1)
         else:
             print(f"[warn] --images 文件不存在: {args.images}，本次渲染将不带配图"
@@ -1670,6 +1681,22 @@ def main():
               f"转 ImageGen 生图/方式 C 图表补图后重跑；仅当段落内容性质"
               f"确实不需要图时才保留无图。", file=sys.stderr)
 
+    # 竖屏开场封面图必配（1.5.69 起由模式预设 verticalOpeningCover 定义，
+    # flow 预设为 true）：portrait/both 且 images 无 "opening" 键时提示；
+    # 章节预设该键为 false——开场保持目录、无配图义务。run.py 一键编排读
+    # 同一预设拦截，分步执行时这行 warn 是唯一防线。纯文字版（--images
+    # 未传/文件不存在）同样提示——竖屏纯文字版是"配图来源全部不可用"的
+    # 兜底，能配就该配。
+    if _opening_cover_missing(images, args.aspect,
+                              get_mode_preset(manifest)["verticalOpeningCover"]):
+        print("[warn] 竖屏开场页缺少封面图（当前叙事模式默认必配，无需手动"
+              "开启）：请用 ImageGen 生成一张点题封面图（风格与内容段配图"
+              "一致），放进 HTML 输出目录的 images/，并在 images.json 写 "
+              '"opening": {"src": "images/opening.png"} 后重跑；'
+              "仅当配图来源全部不可用（纯文字版兜底）时才保留无图开场。"
+              "（章节模式开场保持目录，无配图义务，无需处理本提示的变体）",
+              file=sys.stderr)
+
     # Resolve GSAP src: explicit CLI value wins; otherwise try local caching
     # (first run downloads once to ~/.cache/content-to-video/vendor/, later runs
     # and other output dirs just copy from that cache — no repeated network
@@ -1682,7 +1709,7 @@ def main():
 
     def _render_one(aspect, width, height, output_path):
         """渲染单个画幅版本。--aspect both 会对 landscape/portrait 各调用一次。"""
-        import shutil  # 函数内局部导入（音频拷贝分支也有 import shutil，统一局部作用域）
+        import shutil  # 局部导入：音频拷贝与 preview.js 复制共用
         w, h = width, height
         out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
         if aspect == "portrait":
@@ -1733,7 +1760,6 @@ def main():
                     os.makedirs(audio_dir, exist_ok=True)
                     dst = os.path.join(audio_dir, os.path.basename(audio_abs))
                     if not _file_identical(audio_abs, dst):
-                        import shutil
                         shutil.copy2(audio_abs, dst)
                     print(f"[audio] 音频在项目根之外，已自动拷贝到 {dst}",
                           file=sys.stderr)
